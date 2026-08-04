@@ -1,0 +1,9 @@
+# Scraped download output — images and bulk files stay local only
+nongtalay-activity-downloads/
+nongtalay-downloads/
+nongtalay-pr-downloads/
+node_modules/
+.env
+downloads/
+
+.browser-profile/

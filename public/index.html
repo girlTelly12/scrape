@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="th">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Multi-Website Scraper System</title>
+        <style>
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: Arial, sans-serif;
+                margin: 24px;
+                background: #f5f7fa;
+                color: #0f172a;
+            }
+
+            .container {
+                max-width: 1120px;
+                margin: 0 auto;
+                background: #fff;
+                padding: 20px;
+                border-radius: 12px;
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+            }
+
+            h1 {
+                margin-top: 0;
+            }
+
+            .field {
+                margin-bottom: 14px;
+            }
+
+            label {
+                display: block;
+                font-weight: 600;
+                margin-bottom: 6px;
+            }
+
+            input,
+            textarea,
+            select {
+                width: 100%;
+                padding: 10px;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                font: inherit;
+                background: #fff;
+            }
+
+            input:focus,
+            textarea:focus,
+            select:focus {
+                outline: 2px solid #99f6e4;
+                border-color: #0f766e;
+            }
+
+            button {
+                background: #0f766e;
+                color: #fff;
+                border: 0;
+                padding: 10px 18px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-weight: 600;
+                font: inherit;
+            }
+
+            button:hover:not(:disabled) {
+                filter: brightness(0.95);
+            }
+
+            button:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+
+            .danger {
+                background: #b91c1c;
+                margin-left: 8px;
+            }
+
+            .secondary {
+                background: #0f766e;
+                padding: 9px 14px;
+            }
+
+            .remove-topic-btn {
+                background: #fff;
+                color: #b91c1c;
+                border: 1px solid #fecaca;
+                padding: 7px 11px;
+                white-space: nowrap;
+            }
+
+            .other-topics-section {
+                padding: 16px;
+                border: 1px solid #cbd5e1;
+                border-radius: 10px;
+                background: #f8fafc;
+            }
+
+            .section-heading {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 4px;
+            }
+
+            .section-heading label {
+                margin: 0;
+                font-size: 18px;
+            }
+
+            .other-topics-list {
+                display: grid;
+                gap: 12px;
+                margin-top: 12px;
+            }
+
+            .other-topic-row {
+                padding: 14px;
+                border: 1px solid #dbe4ee;
+                border-radius: 10px;
+                background: #fff;
+            }
+
+            .other-topic-row-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 10px;
+            }
+
+            .other-topic-row-title {
+                font-weight: 700;
+            }
+
+            .other-topic-grid {
+                display: grid;
+                grid-template-columns: 1fr 1.35fr;
+                gap: 12px;
+            }
+
+            .other-topic-grid .field {
+                margin-bottom: 0;
+            }
+
+            .status {
+                margin-top: 16px;
+                padding: 12px;
+                background: #ecfeff;
+                border: 1px solid #a5f3fc;
+                border-radius: 8px;
+                white-space: pre-wrap;
+            }
+
+            .muted {
+                color: #475569;
+                font-size: 14px;
+            }
+
+            .logs {
+                margin-top: 16px;
+                padding: 12px;
+                background: #0f172a;
+                color: #e2e8f0;
+                border-radius: 8px;
+                min-height: 260px;
+                max-height: 380px;
+                overflow: auto;
+                white-space: pre-wrap;
+                font-family: Consolas, monospace;
+                font-size: 13px;
+                line-height: 1.45;
+            }
+
+            .audit-section {
+                margin-top: 18px;
+                padding: 16px;
+                border: 1px solid #cbd5e1;
+                border-radius: 10px;
+                background: #fff;
+            }
+
+            .audit-section h2 {
+                margin: 0 0 6px;
+            }
+
+            .audit-summary-grid {
+                display: grid;
+                grid-template-columns: repeat(7, minmax(110px, 1fr));
+                gap: 10px;
+                margin: 14px 0;
+            }
+
+            .audit-card {
+                padding: 12px;
+                border: 1px solid #dbe4ee;
+                border-radius: 9px;
+                background: #f8fafc;
+            }
+
+            .audit-card strong {
+                display: block;
+                margin-top: 4px;
+                font-size: 24px;
+                line-height: 1;
+            }
+
+            .audit-toolbar {
+                display: grid;
+                grid-template-columns: 190px minmax(220px, 1fr) auto auto auto;
+                gap: 8px;
+                align-items: center;
+                margin-bottom: 12px;
+            }
+
+            .audit-toolbar select,
+            .audit-toolbar input {
+                width: 100%;
+                padding: 9px 10px;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                font: inherit;
+                background: #fff;
+            }
+
+            .download-link {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 40px;
+                padding: 8px 12px;
+                border-radius: 8px;
+                background: #1d4ed8;
+                color: #fff;
+                font-weight: 600;
+                text-decoration: none;
+                white-space: nowrap;
+            }
+
+            .audit-table-wrap {
+                overflow: auto;
+                max-height: 520px;
+                border: 1px solid #dbe4ee;
+                border-radius: 8px;
+            }
+
+            .audit-table {
+                width: 100%;
+                min-width: 1120px;
+                border-collapse: collapse;
+                font-size: 13px;
+            }
+
+            .audit-table th,
+            .audit-table td {
+                padding: 9px;
+                border-bottom: 1px solid #e2e8f0;
+                text-align: left;
+                vertical-align: top;
+            }
+
+            .audit-table th {
+                position: sticky;
+                top: 0;
+                z-index: 1;
+                background: #f1f5f9;
+            }
+
+            .audit-url {
+                display: block;
+                max-width: 430px;
+                overflow-wrap: anywhere;
+            }
+
+            .audit-title-cell {
+                max-width: 260px;
+                overflow-wrap: anywhere;
+            }
+
+            .status-badge {
+                display: inline-block;
+                padding: 3px 7px;
+                border-radius: 999px;
+                background: #e2e8f0;
+                font-weight: 700;
+                white-space: nowrap;
+            }
+
+            .status-downloaded,
+            .status-already_exists {
+                background: #dcfce7;
+                color: #166534;
+            }
+
+            .status-not_found,
+            .status-invalid_content,
+            .status-empty_file,
+            .status-failed {
+                background: #fee2e2;
+                color: #991b1b;
+            }
+
+            .status-forbidden,
+            .status-unauthorized,
+            .status-rate_limited,
+            .status-server_error,
+            .status-timeout,
+            .status-network_error {
+                background: #ffedd5;
+                color: #9a3412;
+            }
+
+            .status-skipped_external,
+            .status-referenced_embed,
+            .status-referenced_stream {
+                background: #e0e7ff;
+                color: #3730a3;
+            }
+
+
+            .vendor-panel {
+                margin-bottom: 18px;
+                padding: 16px;
+                border: 1px solid #99f6e4;
+                border-radius: 12px;
+                background: linear-gradient(135deg, #f0fdfa, #f8fafc);
+            }
+
+            .vendor-grid {
+                display: grid;
+                grid-template-columns: minmax(0, 1.5fr) minmax(180px, 0.6fr) minmax(220px, 0.8fr);
+                gap: 12px;
+                align-items: end;
+            }
+
+            .vendor-actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                align-items: center;
+                margin-top: 10px;
+            }
+
+            .checkbox-row {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 600;
+            }
+
+            .checkbox-row input {
+                width: auto;
+                margin: 0;
+            }
+
+            .vendor-result {
+                margin-top: 12px;
+                padding: 12px;
+                border-radius: 9px;
+                border: 1px solid #cbd5e1;
+                background: #fff;
+                white-space: pre-wrap;
+            }
+
+            .vendor-result.success {
+                border-color: #86efac;
+                background: #f0fdf4;
+            }
+
+            .vendor-result.error {
+                border-color: #fca5a5;
+                background: #fef2f2;
+            }
+
+            @media (max-width: 720px) {
+                body {
+                    margin: 10px;
+                }
+
+                .container {
+                    padding: 14px;
+                }
+
+                .section-heading,
+                .other-topic-row-header {
+                    align-items: flex-start;
+                }
+
+                .other-topic-grid,
+                .vendor-grid {
+                    grid-template-columns: 1fr;
+                }
+
+                .secondary {
+                    white-space: nowrap;
+                }
+
+                .audit-summary-grid {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+
+                .audit-toolbar {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>ระบบดึงข้อมูลหลายเว็บไซต์</h1>
+            <p class="muted">
+                กรอกเว็บไซต์หลักเพื่อให้ระบบตรวจผู้พัฒนาและเลือก Adapter เท่านั้น
+                ลิงก์จัดซื้อจัดจ้าง ข่าวประชาสัมพันธ์ กิจกรรม และหมวดเพิ่มเติม ให้ผู้ใช้กรอกเอง ระบบจะไม่เติมหรือเขียนทับ
+            </p>
+
+            <form id="start-form">
+                <section class="vendor-panel">
+                    <div class="vendor-grid">
+                        <div class="field" style="margin-bottom: 0">
+                            <label for="siteUrl">เว็บไซต์หลักสำหรับตรวจบริษัท</label>
+                            <input
+                                id="siteUrl"
+                                name="siteUrl"
+                                type="url"
+                                placeholder="https://www.example.go.th/"
+                            />
+                        </div>
+                        <div class="field" style="margin-bottom: 0">
+                            <label for="vendorMode">โหมดเลือก Adapter</label>
+                            <select id="vendorMode" name="vendorMode">
+                                <option value="auto">ตรวจอัตโนมัติ</option>
+                                <option value="manual">เลือกเอง</option>
+                            </select>
+                        </div>
+                        <div class="field" style="margin-bottom: 0">
+                            <label for="vendorId">Adapter บริษัท</label>
+                            <select id="vendorId" name="vendorId" disabled>
+                                <option value="generic">Generic Adaptive Adapter</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="vendor-actions">
+                        <button id="detect-vendor-btn" type="button" class="secondary">ตรวจบริษัทและเลือก Adapter</button>
+                        <span class="muted">ระบบไม่เติม URL หมวดอัตโนมัติ ผู้ใช้เป็นผู้กำหนด URL ทุกช่อง</span>
+                    </div>
+                    <div id="vendor-result" class="vendor-result">ยังไม่ได้ตรวจผู้พัฒนาเว็บไซต์</div>
+                </section>
+
+                <div class="field">
+                    <label for="websiteName">ชื่อเว็บไซต์/ชื่อฐานข้อมูล</label>
+                    <input
+                        id="websiteName"
+                        name="websiteName"
+                        placeholder="เว้นว่างได้ ระบบจะใช้ชื่อโดเมน เช่น dinudom"
+                    />
+                </div>
+
+                <section class="vendor-panel" style="border-color:#c7d8ff;background:#f7faff">
+                    <div class="section-heading">
+                        <label for="fullSiteMigration" style="display:flex;align-items:center;gap:10px">
+                            <input id="fullSiteMigration" name="fullSiteMigration" type="checkbox" style="width:auto" />
+                            โหมดสำรวจและย้ายข้อมูลสาธารณะทั้งเว็บไซต์
+                        </label>
+                    </div>
+                    <p class="muted" style="margin:8px 0 14px">
+                        สำรวจหน้าสาธารณะในโดเมนเดียวกัน เก็บ HTML, ข้อความ, PDF, Office, ZIP,
+                        รูปภาพ, วิดีโอ, เสียง, CSS, JavaScript และ Font พร้อม Resume/Checkpoint
+                        หากมีหน้าตรวจสอบ Cloudflare ให้ดำเนินการเองใน Chrome ที่เปิดผ่านพอร์ต 9222
+                    </p>
+                    <div class="vendor-grid">
+                        <div class="field" style="margin-bottom:0">
+                            <label for="migrationMaxPages">จำนวนหน้าสูงสุด</label>
+                            <input id="migrationMaxPages" type="number" min="1" max="50000" value="1000" />
+                        </div>
+                        <div class="field" style="margin-bottom:0">
+                            <label for="migrationMaxAssets">จำนวนไฟล์สูงสุด</label>
+                            <input id="migrationMaxAssets" type="number" min="1" max="200000" value="10000" />
+                        </div>
+                        <div class="field" style="margin-bottom:0">
+                            <label for="migrationMaxDepth">ความลึกของลิงก์</label>
+                            <input id="migrationMaxDepth" type="number" min="0" max="100" value="12" />
+                        </div>
+                        <div class="field" style="margin-bottom:0">
+                            <label for="migrationMaxFileMb">ขนาดไฟล์สูงสุด (MB)</label>
+                            <input id="migrationMaxFileMb" type="number" min="1" max="4096" value="500" />
+                        </div>
+                        <div class="field" style="margin-bottom:0">
+                            <label for="migrationDelayMs">หน่วงต่อคำขอ (ms)</label>
+                            <input id="migrationDelayMs" type="number" min="0" max="60000" value="700" />
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:14px">
+                        <label style="display:flex;align-items:center;gap:8px">
+                            <input id="includeExternalAssets" type="checkbox" checked style="width:auto" />
+                            เก็บ CDN/ทรัพยากรต่างโดเมนที่หน้าเว็บโหลดจริง
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px">
+                            <input id="resumeMigration" type="checkbox" checked style="width:auto" />
+                            ทำงานต่อจาก Checkpoint เมื่อหยุดกลางทาง
+                        </label>
+                    </div>
+                </section>
+
+                <div class="field">
+                    <label for="procurementUrl">ลิงก์จัดซื้อจัดจ้าง</label>
+                    <input
+                        id="procurementUrl"
+                        name="procurementUrl"
+                    />
+                </div>
+
+                <div class="field">
+                    <label for="publicRelationsUrl">ลิงก์ประชาสัมพันธ์</label>
+                    <input
+                        id="publicRelationsUrl"
+                        name="publicRelationsUrl"
+                    />
+                </div>
+
+                <div class="field">
+                    <label for="activityUrl">ลิงก์ภาพกิจกรรม</label>
+                    <input id="activityUrl" name="activityUrl" placeholder="https://..." />
+                </div>
+
+                <div class="field other-topics-section">
+                    <div class="section-heading">
+                        <label>อื่น ๆ (หมวดข่าวเพิ่มเติม)</label>
+                        <button id="add-other-topic-btn" type="button" class="secondary">+ เพิ่มหัวข้อ</button>
+                    </div>
+                    <p class="muted" style="margin: 6px 0 0">
+                        เพิ่มได้หลายหัวข้อ แต่ละหัวข้อจะสร้างตารางและโฟลเดอร์แยกกัน
+                        กรอกเพียงลิงก์ได้ ระบบจะตั้งชื่อตารางให้อัตโนมัติ
+                    </p>
+                    <div id="other-topics-list" class="other-topics-list"></div>
+                </div>
+
+                <div class="field">
+                    <label for="lineNotifyToken">LINE Notify Token (ถ้ามี)</label>
+                    <input
+                        id="lineNotifyToken"
+                        name="lineNotifyToken"
+                        placeholder="ใส่ token สำหรับแจ้งเตือนเข้ากลุ่ม LINE"
+                    />
+                </div>
+
+                <div class="field">
+                    <label for="lineMessage">ข้อความแจ้งเตือน LINE</label>
+                    <textarea
+                        id="lineMessage"
+                        name="lineMessage"
+                        rows="2"
+                        placeholder="ระบบดึงข้อมูลเสร็จสิ้นแล้ว"
+                    ></textarea>
+                </div>
+
+                <button id="start-btn" type="submit">เริ่มดึงข้อมูล</button>
+                <button id="stop-btn" type="button" class="danger">หยุดการดึงข้อมูล</button>
+            </form>
+
+            <div class="status" id="status-box">สถานะ: ยังไม่เริ่มงาน</div>
+
+            <section class="audit-section" id="file-audit-section">
+                <h2>ตรวจสอบไฟล์แนบ</h2>
+                <p class="muted" style="margin: 0">
+                    แสดงจำนวนไฟล์ทั้งหมด ไฟล์ที่ดาวน์โหลดได้ และไฟล์ที่ตอบ 404/403 พร้อม URL ต้นทาง
+                </p>
+
+                <div class="audit-summary-grid">
+                    <div class="audit-card">ไฟล์ทั้งหมด<strong id="audit-total">0</strong></div>
+                    <div class="audit-card">ดาวน์โหลดได้<strong id="audit-downloadable">0</strong></div>
+                    <div class="audit-card">404 / ไม่พบ<strong id="audit-404">0</strong></div>
+                    <div class="audit-card">403 / ถูกปฏิเสธ<strong id="audit-403">0</strong></div>
+                    <div class="audit-card">ล้มเหลวอื่น ๆ<strong id="audit-failed">0</strong></div>
+                    <div class="audit-card">ข้ามต่างเว็บไซต์<strong id="audit-skipped">0</strong></div>
+                    <div class="audit-card">ลิงก์ซ้ำ<strong id="audit-duplicate">0</strong></div>
+                </div>
+
+                <div class="audit-toolbar">
+                    <select id="audit-status-filter" aria-label="กรองสถานะไฟล์">
+                        <option value="all">ทุกสถานะ</option>
+                        <option value="downloaded">ดาวน์โหลดสำเร็จ</option>
+                        <option value="not_found">404 / ไม่พบ</option>
+                        <option value="forbidden">403 / ถูกปฏิเสธ</option>
+                        <option value="unauthorized">401 / ต้องเข้าสู่ระบบ</option>
+                        <option value="invalid_content">ตอบกลับไม่ใช่ไฟล์</option>
+                        <option value="timeout">หมดเวลา</option>
+                        <option value="network_error">เครือข่ายผิดพลาด</option>
+                        <option value="server_error">Server error</option>
+                        <option value="skipped_external">ข้ามต่างเว็บไซต์</option>
+                        <option value="referenced_embed">เก็บลิงก์วิดีโอ</option>
+                        <option value="referenced_stream">เก็บลิงก์สตรีม</option>
+                        <option value="failed">ผิดพลาดอื่น ๆ</option>
+                    </select>
+                    <input id="audit-search" type="search" placeholder="ค้นหาชื่อไฟล์ ข่าว หรือ URL" />
+                    <button id="audit-refresh-btn" type="button" class="secondary">รีเฟรช</button>
+                    <a class="download-link" href="/api/file-audit.csv">ดาวน์โหลด CSV</a>
+                    <a class="download-link" href="/api/file-audit.json">ดาวน์โหลด JSON</a>
+                </div>
+
+                <div class="muted" id="audit-result-note" style="margin-bottom: 8px">ยังไม่พบไฟล์</div>
+                <div class="audit-table-wrap">
+                    <table class="audit-table">
+                        <thead>
+                            <tr>
+                                <th>สถานะ</th>
+                                <th>HTTP</th>
+                                <th>หมวด</th>
+                                <th>ชื่อไฟล์</th>
+                                <th>หัวข้อข่าว</th>
+                                <th>URL ไฟล์</th>
+                                <th>สาเหตุ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="audit-table-body">
+                            <tr><td colspan="7">ยังไม่พบข้อมูล</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <div class="logs" id="log-output">[ยังไม่มี log]</div>
+        </div>
+
+        <script src="/app.js?v=9"></script>
+    </body>
+</html>
