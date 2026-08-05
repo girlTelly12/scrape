@@ -56,8 +56,28 @@ function isHttpUrl(value) {
     }
 }
 
-const STEP_DELAY_MS = 2 * 60 * 1000;
+const DEFAULT_STEP_DELAY_MS = 20 * 1000;
+const MAX_STEP_DELAY_MS = 10 * 60 * 1000;
 const STOP_ERROR = "JOB_STOPPED_BY_USER";
+
+/**
+ * เวลาหน่วงระหว่างแต่ละส่วนงาน ปรับได้ด้วย SECTION_DELAY_MS
+ * ทุกส่วนมี delay ต่อ request อยู่แล้ว ค่านี้จึงเป็นเพียงช่วงพักก่อนเปลี่ยนส่วน
+ * ตั้ง 0 เพื่อไม่หน่วงเลย
+ */
+function getStepDelayMs() {
+    const text = String(process.env.SECTION_DELAY_MS ?? "").trim();
+    // ค่าว่างถือว่ายังไม่ได้ตั้ง เพื่อไม่ให้กลายเป็น "ไม่หน่วงเลย" โดยไม่ตั้งใจ
+    if (!text) return DEFAULT_STEP_DELAY_MS;
+    const raw = Number(text);
+    if (!Number.isFinite(raw)) return DEFAULT_STEP_DELAY_MS;
+    return Math.max(0, Math.min(MAX_STEP_DELAY_MS, Math.floor(raw)));
+}
+
+function formatDelayText(ms) {
+    if (ms >= 60000) return `${Math.round((ms / 60000) * 10) / 10} นาที`;
+    return `${Math.round(ms / 1000)} วินาที`;
+}
 
 class JobRunner {
     constructor() {
@@ -589,6 +609,13 @@ class JobRunner {
 
             this.log(`ส่วนที่เลือกดึงข้อมูล: ${sections.map((s) => s.label).join(", ")}`);
 
+            const stepDelayMs = getStepDelayMs();
+            this.log(
+                stepDelayMs > 0
+                    ? `หน่วงเวลาระหว่างส่วน: ${formatDelayText(stepDelayMs)} (ปรับได้ที่ SECTION_DELAY_MS ใน .env)`
+                    : "ไม่หน่วงเวลาระหว่างส่วน (SECTION_DELAY_MS=0)",
+            );
+
             const sectionResults = {};
             for (let i = 0; i < sections.length; i += 1) {
                 const section = sections[i];
@@ -613,9 +640,11 @@ class JobRunner {
 
                 const hasNext = i < sections.length - 1;
                 if (hasNext) {
-                    this.currentStep = `wait-${i + 1}`;
-                    this.log("หน่วงเวลา 2 นาที ก่อนเริ่มส่วนถัดไป");
-                    await sleepWithStop(STEP_DELAY_MS, shouldStop);
+                    if (stepDelayMs > 0) {
+                        this.currentStep = `wait-${i + 1}`;
+                        this.log(`หน่วงเวลา ${formatDelayText(stepDelayMs)} ก่อนเริ่มส่วนถัดไป`);
+                        await sleepWithStop(stepDelayMs, shouldStop);
+                    }
                     assertNotStopped();
                 }
             }
