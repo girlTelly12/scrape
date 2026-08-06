@@ -610,11 +610,17 @@ class JobRunner {
             this.log(`ส่วนที่เลือกดึงข้อมูล: ${sections.map((s) => s.label).join(", ")}`);
 
             const stepDelayMs = getStepDelayMs();
-            this.log(
-                stepDelayMs > 0
-                    ? `หน่วงเวลาระหว่างส่วน: ${formatDelayText(stepDelayMs)} (ปรับได้ที่ SECTION_DELAY_MS ใน .env)`
-                    : "ไม่หน่วงเวลาระหว่างส่วน (SECTION_DELAY_MS=0)",
-            );
+            const stepWaitCount = Math.max(0, sections.length - 1);
+            if (stepWaitCount === 0) {
+                this.log("มีส่วนงานเดียว จึงไม่มีช่วงพักระหว่างส่วน");
+            } else if (stepDelayMs > 0) {
+                this.log(
+                    `หน่วงเวลาระหว่างส่วน: ${formatDelayText(stepDelayMs)} × ${stepWaitCount} ครั้ง ` +
+                        `(รวม ${formatDelayText(stepDelayMs * stepWaitCount)} — ปรับได้ที่ SECTION_DELAY_MS ใน .env)`,
+                );
+            } else {
+                this.log("ไม่หน่วงเวลาระหว่างส่วน (SECTION_DELAY_MS=0)");
+            }
 
             const sectionResults = {};
             for (let i = 0; i < sections.length; i += 1) {
