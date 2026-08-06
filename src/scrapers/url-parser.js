@@ -706,6 +706,106 @@ function discoverPageLinks(html, pageUrl, startUrl, adapterProfile = {}) {
     };
 }
 
+/** คีย์รวมหมวดเดียวกันที่เขียน URL ต่างกัน เช่น "?cat_id=1" กับ "?&cat_id=1&Page=2" */
+function categoryDedupeKey(url) {
+    try {
+        const parsed = new URL(url);
+        const parts = Object.entries(categoryConstraintsFromUrl(url))
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, value]) => `${key}=${value}`);
+        return `${parsed.hostname.toLowerCase().replace(/^www\./, "")}${parsed.pathname.toLowerCase()}?${parts.join("&")}`;
+    } catch {
+        return String(url || "");
+    }
+}
+
+/** เมนูหลายเว็บเป็นรูปภาพ จึงต้องดึงชื่อจาก alt/title ของแท็กภายในลิงก์ */
+function anchorLabelMap(html, pageUrl) {
+    const labels = new Map();
+    const anchorRe = /<a\b[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = anchorRe.exec(String(html || ""))) !== null) {
+        const href = resolveUrl(match[1] || match[2] || match[3], pageUrl);
+        if (!href) continue;
+        const inner = match[4] || "";
+        const attr =
+            /\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(inner) ||
+            /\btitle\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(inner);
+        const label = cleanText(attr ? attr[1] || attr[2] || "" : "").trim();
+        if (!label) continue;
+        const key = categoryDedupeKey(href);
+        if (!labels.has(key) || label.length > labels.get(key).length) labels.set(key, label);
+    }
+    return labels;
+}
+
+/**
+ * เมนู JavaScript รุ่นเก่า (เช่น stm_aix ของ Sothink) เก็บชื่อและลิงก์ไว้ในอาร์เรย์เดียวกัน
+ * ตัวอย่าง: stm_aix("p4i0","p1i0",[0,"ข่าวประชาสัมพันธ์","","",-1,-1,0,"http://.../news.php?cat_id=1"],280,0)
+ */
+function javascriptMenuLabelMap(html, pageUrl) {
+    const labels = new Map();
+    const groupRe = /\[([^[\]]{0,800})\]/g;
+    let group;
+    while ((group = groupRe.exec(String(html || ""))) !== null) {
+        const strings = [...group[1].matchAll(/"([^"]*)"/g)].map((item) => item[1]);
+        const urlIndex = strings.findIndex(
+            (value) =>
+                /^(?:https?:\/\/|\.{0,2}\/)/i.test(value) &&
+                Object.keys(categoryConstraintsFromUrl(resolveUrl(value, pageUrl) || "")).length > 0,
+        );
+        if (urlIndex < 0) continue;
+
+        const label = strings
+            .slice(0, urlIndex)
+            .map((value) => cleanText(value).trim())
+            .filter((value) => value && !/^(?:https?:\/\/|\.{0,2}\/)/i.test(value) && !/^-?\d+$/.test(value))
+            .pop();
+        if (!label) continue;
+
+        const href = resolveUrl(strings[urlIndex], pageUrl);
+        if (!href) continue;
+        const key = categoryDedupeKey(href);
+        if (!labels.has(key) || label.length > labels.get(key).length) labels.set(key, label);
+    }
+    return labels;
+}
+
+/**
+ * ดึงรายการ "หมวด" ทั้งหมดที่ปรากฏบนหน้าเว็บ (เมนู/sidebar ของเว็บหน่วยงาน)
+ * นับเป็นหมวดเมื่อ URL มีพารามิเตอร์หมวด (cat_id, cid, type ฯลฯ) และไม่ใช่หน้ารายละเอียด/หน้าแบ่งหน้า
+ * @returns {{ url: string, title: string }[]}
+ */
+function discoverCategoryLinks(html, pageUrl) {
+    let host;
+    try {
+        host = new URL(pageUrl).hostname.toLowerCase().replace(/^www\./, "");
+    } catch {
+        return [];
+    }
+
+    const labels = anchorLabelMap(html, pageUrl);
+    for (const [key, label] of javascriptMenuLabelMap(html, pageUrl)) {
+        if (!labels.has(key) || label.length > labels.get(key).length) labels.set(key, label);
+    }
+    const found = new Map();
+    for (const link of extractNavigationLinks(html, pageUrl)) {
+        if (!isHttpUrl(link.href) || isAssetLikeUrl(link.href)) continue;
+        if (!sameHostname(link.href, host)) continue;
+        if (!Object.keys(categoryConstraintsFromUrl(link.href)).length) continue;
+        if (detailIdFromUrl(link.href)) continue;
+        if (hasPaginationSignal(link.href)) continue;
+
+        const key = categoryDedupeKey(link.href);
+        const title = (cleanText(link.text || "").replace(/\s+/g, " ").trim() || labels.get(key) || "").slice(0, 120);
+        const current = found.get(key);
+        if (!current || title.length > current.title.length) {
+            found.set(key, { url: canonicalizeUrl(link.href), title });
+        }
+    }
+    return [...found.values()];
+}
+
 function listingPageId(url) {
     const found = getParamCaseInsensitive(url, PAGINATION_PARAM_NAMES);
     if (found) {
@@ -746,6 +846,7 @@ module.exports = {
     detailIdFromUrl,
     detailIdParamFromUrl,
     detectParserProfile,
+    discoverCategoryLinks,
     discoverPageLinks,
     extractNavigationLinks,
     isGenericSiblingDetailUrl,

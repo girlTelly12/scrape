@@ -121,6 +121,65 @@
                 margin-top: 12px;
             }
 
+            .topic-actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .discover-panel {
+                margin-top: 12px;
+                padding: 12px;
+                border: 1px solid #cbd5e1;
+                border-radius: 10px;
+                background: #ffffff;
+            }
+
+            .discover-toolbar {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .discover-toolbar input {
+                flex: 1 1 200px;
+                min-width: 140px;
+            }
+
+            .discover-list {
+                margin-top: 10px;
+                max-height: 320px;
+                overflow-y: auto;
+                display: grid;
+                gap: 4px;
+            }
+
+            .discover-item {
+                display: flex;
+                align-items: flex-start;
+                gap: 8px;
+                padding: 6px 8px;
+                border-radius: 6px;
+            }
+
+            .discover-item:nth-child(odd) {
+                background: #f8fafc;
+            }
+
+            .discover-item input[type="checkbox"] {
+                width: auto;
+                margin-top: 3px;
+                flex: none;
+            }
+
+            .discover-item .discover-url {
+                display: block;
+                font-size: 12px;
+                color: #64748b;
+                word-break: break-all;
+            }
+
             .other-topic-row {
                 padding: 14px;
                 border: 1px solid #dbe4ee;
@@ -532,12 +591,40 @@
                 <div class="field other-topics-section">
                     <div class="section-heading">
                         <label>อื่น ๆ (หมวดข่าวเพิ่มเติม)</label>
-                        <button id="add-other-topic-btn" type="button" class="secondary">+ เพิ่มหัวข้อ</button>
+                        <div class="topic-actions">
+                            <button id="discover-topics-btn" type="button">ค้นหาหมวดจากเว็บ</button>
+                            <button id="bulk-topics-btn" type="button" class="secondary">วางหลายบรรทัด</button>
+                            <button id="add-other-topic-btn" type="button" class="secondary">+ เพิ่มหัวข้อ</button>
+                        </div>
                     </div>
                     <p class="muted" style="margin: 6px 0 0">
-                        เพิ่มได้หลายหัวข้อ แต่ละหัวข้อจะสร้างตารางและโฟลเดอร์แยกกัน
-                        กรอกเพียงลิงก์ได้ ระบบจะตั้งชื่อตารางให้อัตโนมัติ
+                        กด <strong>ค้นหาหมวดจากเว็บ</strong> เพื่อดึงหมวดทั้งหมดจากเมนูเว็บไซต์อัตโนมัติ
+                        (ใช้ลิงก์จากช่อง “เว็บไซต์หลัก”) แล้วติ๊กเลือกเฉพาะที่ต้องการ
                     </p>
+
+                    <div id="discover-panel" class="discover-panel" hidden>
+                        <div class="discover-toolbar">
+                            <strong id="discover-count">พบ 0 หมวด</strong>
+                            <input id="discover-filter" type="text" placeholder="กรองด้วยคำค้น..." />
+                            <button id="discover-all" type="button" class="secondary">เลือกทั้งหมด</button>
+                            <button id="discover-none" type="button" class="secondary">ไม่เลือกเลย</button>
+                            <button id="discover-apply" type="button">เพิ่มที่เลือก</button>
+                            <button id="discover-close" type="button" class="secondary">ปิด</button>
+                        </div>
+                        <div id="discover-list" class="discover-list"></div>
+                    </div>
+
+                    <div id="bulk-panel" class="discover-panel" hidden>
+                        <p class="muted" style="margin: 0 0 8px">
+                            วางทีละบรรทัด รูปแบบ <code>ชื่อหัวข้อ , ลิงก์</code> หรือใส่เฉพาะลิงก์ก็ได้
+                        </p>
+                        <textarea id="bulk-input" rows="6" placeholder="ข่าวประชาสัมพันธ์, https://example.go.th/news.php?cat_id=1&#10;https://example.go.th/news.php?cat_id=2"></textarea>
+                        <div class="discover-toolbar" style="margin-top: 8px">
+                            <button id="bulk-apply" type="button">เพิ่มทั้งหมด</button>
+                            <button id="bulk-close" type="button" class="secondary">ปิด</button>
+                        </div>
+                    </div>
+
                     <div id="other-topics-list" class="other-topics-list"></div>
                 </div>
 

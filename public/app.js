@@ -278,6 +278,33 @@
         updateOtherTopicRowNumbers();
     }
 
+    /** เพิ่มหลายหัวข้อในครั้งเดียว โดยใช้แถวว่างที่มีอยู่ก่อน และไม่ใส่ลิงก์ซ้ำ */
+    function appendOtherTopics(items = []) {
+        if (!otherTopicsList) return 0;
+        const existing = collectOtherTopics();
+        const seen = new Set(existing.map((topic) => topic.url).filter(Boolean));
+
+        // ลบแถวที่ยังว่างทั้งคู่ทิ้ง เพื่อไม่ให้เหลือช่องเปล่าคั่นกลาง
+        [...otherTopicsList.querySelectorAll(".other-topic-row")].forEach((row) => {
+            const title = String(row.querySelector(".other-topic-title")?.value || "").trim();
+            const url = String(row.querySelector(".other-topic-url")?.value || "").trim();
+            if (!title && !url) row.remove();
+        });
+
+        let added = 0;
+        items.forEach((item) => {
+            const url = String(item.url || "").trim();
+            if (!url || seen.has(url)) return;
+            seen.add(url);
+            createOtherTopicRow({ title: String(item.title || "").trim(), url });
+            added += 1;
+        });
+
+        if (!otherTopicsList.querySelector(".other-topic-row")) createOtherTopicRow();
+        updateOtherTopicRowNumbers();
+        return added;
+    }
+
     function collectOtherTopics() {
         if (!otherTopicsList) return [];
         return [...otherTopicsList.querySelectorAll(".other-topic-row")]

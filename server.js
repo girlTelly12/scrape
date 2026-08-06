@@ -9,6 +9,8 @@ const {
 } = require("./src/db");
 const { detectWebsiteVendor } = require("./src/vendors/detector");
 const { listVendorAdapters } = require("./src/vendors/registry");
+const { fetchHtml } = require("./src/common");
+const { discoverCategoryLinks } = require("./src/scrapers/url-parser");
 
 function loadEnvFile() {
     const envPath = path.join(__dirname, ".env");
@@ -163,6 +165,53 @@ app.post("/api/vendor/detect", async (req, res) => {
         return res.json({ ok: true, ...detection });
     } catch (error) {
         return res.status(500).json({ ok: false, message: error.message });
+    }
+});
+
+/** ค้นหาหมวดข่าวทั้งหมดจากเมนูของเว็บไซต์ เพื่อไม่ต้องกรอกหัวข้อทีละรายการ */
+app.post("/api/topics/discover", async (req, res) => {
+    try {
+        const body = req.body || {};
+        const pageUrl = String(body.pageUrl || body.siteUrl || "").trim();
+        if (!isHttpUrl(pageUrl)) {
+            return res.status(400).json({
+                ok: false,
+                message: "กรุณากรอกลิงก์เว็บไซต์ที่ขึ้นต้นด้วย http:// หรือ https://",
+            });
+        }
+        // เมนูหมวดอยู่คนละหน้าแล้วแต่เว็บ บางแห่งอยู่หน้ารายการ บางแห่งอยู่ index.php เท่านั้น
+        const origin = new URL(pageUrl).origin;
+        const candidates = [pageUrl, `${origin}/index.php`, `${origin}/`].filter(
+            (value, index, list) => list.indexOf(value) === index,
+        );
+
+        const merged = new Map();
+        const scanned = [];
+        let lastError = null;
+        for (const candidate of candidates) {
+            try {
+                const html = await fetchHtml(candidate, (message) => console.log(`[topics] ${message}`), {});
+                const found = discoverCategoryLinks(html, candidate);
+                scanned.push({ url: candidate, found: found.length });
+                for (const topic of found) {
+                    const existing = merged.get(topic.url);
+                    if (!existing || (topic.title || "").length > (existing.title || "").length) {
+                        merged.set(topic.url, topic);
+                    }
+                }
+                if (merged.size >= 3) break;
+            } catch (error) {
+                lastError = error;
+                scanned.push({ url: candidate, error: error.message });
+            }
+        }
+
+        if (!merged.size && lastError) {
+            return res.status(502).json({ ok: false, message: lastError.message, scanned });
+        }
+        return res.json({ ok: true, pageUrl, scanned, topics: [...merged.values()] });
+    } catch (error) {
+        return res.status(502).json({ ok: false, message: error.message });
     }
 });
 

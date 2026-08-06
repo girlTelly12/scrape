@@ -404,6 +404,19 @@ async function mapLimit(items, limit, worker) {
     await Promise.all(workers);
 }
 
+/**
+ * จำนวนหน้ารายละเอียดที่ดึงพร้อมกัน ปรับด้วย SCRAPE_CONCURRENCY
+ * ค่าเริ่มต้น 1 = ทำทีละรายการเหมือนเดิม (สุภาพกับเว็บปลายทางที่สุด)
+ * เพิ่มค่าแล้วเร็วขึ้นตามสัดส่วน แต่เสี่ยงโดน rate-limit/403 มากขึ้น
+ */
+function getDetailConcurrency() {
+    const text = String(process.env.SCRAPE_CONCURRENCY ?? "").trim();
+    if (!text) return 1;
+    const raw = Number(text);
+    if (!Number.isFinite(raw)) return 1;
+    return Math.max(1, Math.min(16, Math.floor(raw)));
+}
+
 async function scrapeNewsCategory({
     startUrl,
     outDir,
@@ -578,8 +591,14 @@ async function scrapeNewsCategory({
         return record;
     };
 
-    for (const detailUrl of detailQueue) {
+    // เก็บผลแยกตามลำดับเดิมของ detailQueue เพื่อให้ลำดับแถวคงที่แม้ทำงานขนานกัน
+    const resultsByIndex = new Array(detailQueue.length);
+
+    const processDetail = async (detailUrl, detailIndex) => {
         assertNotStopped();
+        const localRows = [];
+        const counters = { fileCount: 0, withoutFiles: 0 };
+        resultsByIndex[detailIndex] = { rows: localRows, counters };
         try {
             const source = detailMap.get(detailUrl) || { listingUrl: startUrl, pageId: null, title: "" };
             logger(`ดึงหน้ารายละเอียด: ${detailUrl}`);
@@ -610,7 +629,7 @@ async function scrapeNewsCategory({
             const assetSourceHtml = `${rawDetailHtml || ""}
 ${html}`;
             const candidates = extractAssetCandidates(assetSourceHtml, detailUrl);
-            if (!candidates.length) detailsWithoutFiles += 1;
+            if (!candidates.length) counters.withoutFiles += 1;
 
             let savedFiles = 0;
             for (const candidate of candidates) {
@@ -651,7 +670,7 @@ ${html}`;
 
                 if (candidate.downloadable === false) {
                     const referenceStatus = candidate.mediaType === "video_embed" ? "referenced_embed" : "referenced_stream";
-                    rows.push({
+                    localRows.push({
                         sectionKey: effectiveSectionKey,
                         sectionLabel: effectiveSectionLabel,
                         pageId: source.pageId,
@@ -766,7 +785,7 @@ ${html}`;
                     fileName = ensureFileNameExtension(fileName, headers, buffer);
                     const localPath = uniqueFilePath(folderPath, fileName);
                     fs.writeFileSync(localPath, buffer);
-                    fileCount += 1;
+                    counters.fileCount += 1;
                     savedFiles += 1;
                     const actualFileName = path.basename(localPath);
                     const actualFileType = fileTypeFromResponse(candidate, headers, buffer);
@@ -778,7 +797,7 @@ ${html}`;
                         logger,
                     );
 
-                    rows.push({
+                    localRows.push({
                         sectionKey: effectiveSectionKey,
                         sectionLabel: effectiveSectionLabel,
                         pageId: source.pageId,
@@ -842,7 +861,7 @@ ${html}`;
             }
 
             if (!savedFiles) {
-                rows.push({
+                localRows.push({
                     sectionKey: effectiveSectionKey,
                     sectionLabel: effectiveSectionLabel,
                     pageId: source.pageId,
@@ -879,6 +898,22 @@ ${html}`;
             rethrowIfStopped(error);
             logger(`ข้ามหน้ารายละเอียด (โหลดไม่สำเร็จ): ${detailUrl} - ${error.message}`);
         }
+    };
+
+    const detailConcurrency = getDetailConcurrency();
+    logger(
+        detailConcurrency > 1
+            ? `ดึงหน้ารายละเอียดพร้อมกันครั้งละ ${detailConcurrency} รายการ (ปรับที่ SCRAPE_CONCURRENCY ใน .env)`
+            : "ดึงหน้ารายละเอียดทีละรายการ (ตั้ง SCRAPE_CONCURRENCY เพื่อทำขนาน)",
+    );
+    await mapLimit(detailQueue, detailConcurrency, processDetail);
+
+    // รวมผลตามลำดับเดิม ไม่ใช่ลำดับที่ทำงานเสร็จ เพื่อให้ผลลัพธ์คงที่ทุกครั้ง
+    for (const result of resultsByIndex) {
+        if (!result) continue;
+        for (const row of result.rows) rows.push(row);
+        fileCount += result.counters.fileCount;
+        detailsWithoutFiles += result.counters.withoutFiles;
     }
 
     const fileAuditSummary = summarizeFileAudit(auditRows);

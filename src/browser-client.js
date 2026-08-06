@@ -389,14 +389,36 @@ function sameAssetTarget(candidateUrl, targetUrl) {
     }
 }
 
-async function browserContextRawRequest(context, page, url, logger, requestOptions = {}) {
+// User agent ของ Chrome เป็นค่าคงที่ตลอดอายุ context จึงอ่านครั้งเดียวแล้วเก็บไว้
+// เดิมอ่านใหม่ทุกไฟล์ ทำให้ต้องเปิด/ปิดแท็บเปล่าหลายร้อยครั้งต่อหนึ่งงาน
+const contextUserAgents = new WeakMap();
+
+function getContextUserAgent(context, logger) {
+    if (!contextUserAgents.has(context)) {
+        const promise = (async () => {
+            let page = null;
+            try {
+                page = await createWorkerPage(context, logger);
+                const value = await page.evaluate(() => navigator.userAgent);
+                if (value) return String(value);
+            } catch {
+                // ใช้ค่าสำรองด้านล่าง
+            } finally {
+                if (page) await closeWorkerPage(page, logger).catch(() => {});
+            }
+            return "Mozilla/5.0";
+        })();
+        contextUserAgents.set(context, promise);
+    }
+    return contextUserAgents.get(context);
+}
+
+async function browserContextRawRequest(context, url, logger, requestOptions = {}) {
     if (!context.request || typeof context.request.get !== "function") return null;
     assertNotStopped(requestOptions.shouldStop);
 
     const timeout = Number(process.env.BROWSER_TIMEOUT_MS || 90000);
-    const userAgent = await page
-        .evaluate(() => navigator.userAgent)
-        .catch(() => "Mozilla/5.0");
+    const userAgent = await getContextUserAgent(context, logger);
     const headers = {
         Accept: "application/pdf,application/octet-stream,application/zip,image/*,*/*;q=0.8",
         "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -1079,18 +1101,44 @@ async function warmRefererAssetCache(context, refererUrl, logger, requestOptions
     }
 }
 
+/**
+ * จำกัดจำนวนหน้าอ้างอิงที่เก็บ cache ไว้ (แต่ละรายการเก็บ Buffer ของทุก asset บนหน้านั้น)
+ * เดิมไม่มีเพดานและไม่เคยล้าง ทำให้หน่วยความจำโตไปเรื่อย ๆ ตลอดงาน
+ */
+function refererCacheLimit() {
+    const raw = Number(process.env.BROWSER_REFERER_CACHE_MAX);
+    if (!Number.isFinite(raw)) return 8;
+    return Math.max(1, Math.min(200, Math.floor(raw)));
+}
+
+function trimRefererAssetCache() {
+    const limit = refererCacheLimit();
+    while (refererAssetCache.size > limit) {
+        const oldestKey = refererAssetCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        refererAssetCache.delete(oldestKey);
+    }
+}
+
 async function getRefererAssetCache(context, refererUrl, logger, requestOptions = {}) {
     const key = comparableUrl(refererUrl);
-    if (!refererAssetCache.has(key)) {
-        const promise = warmRefererAssetCache(context, refererUrl, logger, requestOptions).catch(
-            (error) => {
-                refererAssetCache.delete(key);
-                throw error;
-            },
-        );
-        refererAssetCache.set(key, promise);
+    if (refererAssetCache.has(key)) {
+        // ใช้ล่าสุด = ย้ายไปท้ายแถว เพื่อให้รายการที่ไม่ได้ใช้ถูกเขี่ยออกก่อน
+        const existing = refererAssetCache.get(key);
+        refererAssetCache.delete(key);
+        refererAssetCache.set(key, existing);
+        return existing;
     }
-    return refererAssetCache.get(key);
+
+    const promise = warmRefererAssetCache(context, refererUrl, logger, requestOptions).catch(
+        (error) => {
+            refererAssetCache.delete(key);
+            throw error;
+        },
+    );
+    refererAssetCache.set(key, promise);
+    trimRefererAssetCache();
+    return promise;
 }
 
 async function fetchAssetFromRefererPage(
@@ -1450,13 +1498,21 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
     }
 
     const { context } = await getBrowserState(logger);
-    const page = await createWorkerPage(context, logger);
     const isHtml = requestOptions.expectFile
         ? false
         : !/\.(?:pdf|docx?|xlsx?|pptx?|csv|zip|rar|7z|jpe?g|png|gif|webp|mp4|m4v|webm|mov|avi|wmv|mpeg|mpg|ogv|mkv|3gp|m3u8|mp3|m4a|aac|wav|ogg|oga|flac)(?:[?#]|$)/i.test(
               new URL(url).pathname,
           );
 
+    // เส้นทางเร็วสำหรับไฟล์: ขอผ่าน context.request ที่แชร์ Cookie กับ Chrome
+    // ไม่ถูกแทนด้วยหน้า PDF Viewer และไม่ต้องเปิดแท็บเลยเมื่อสำเร็จ
+    // (เดิมเปิด/ปิดแท็บทุกไฟล์ แม้เส้นทางนี้จะไม่ได้ใช้แท็บ)
+    if (!isHtml) {
+        const fastRaw = await browserContextRawRequest(context, url, logger, requestOptions);
+        if (fastRaw) return fastRaw;
+    }
+
+    const page = await createWorkerPage(context, logger);
     if (requestOptions.referer) {
         await page.setExtraHTTPHeaders({ Referer: requestOptions.referer });
     }
@@ -1484,17 +1540,6 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
                 finalUrl: response.url(),
             };
         }
-
-        // ใช้ API request ที่แชร์ Cookie กับ Chrome ก่อน เพื่อให้ได้ byte ของไฟล์โดยตรง
-        // และไม่ถูกแทนด้วยหน้า PDF Viewer ของ Chrome
-        const directRaw = await browserContextRawRequest(
-            context,
-            page,
-            url,
-            logger,
-            requestOptions,
-        );
-        if (directRaw) return directRaw;
 
         // เว็บไซต์บางแห่งป้องกัน hotlink: URL รูปตอบ 403 เมื่อเปิดตรง ๆ
         // แต่โหลดได้เมื่อ Request เกิดจากหน้ากิจกรรมจริง จึงอุ่น Session ด้วยหน้า Referer ก่อน
@@ -1587,7 +1632,6 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
         // หลังเปิดหน้าแล้ว Cookie/Challenge อาจพร้อมมากขึ้น ลอง raw request อีกครั้ง
         const rawAfterNavigation = await browserContextRawRequest(
             context,
-            page,
             url,
             logger,
             requestOptions,
