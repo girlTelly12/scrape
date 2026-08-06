@@ -800,7 +800,10 @@ function discoverCategoryLinks(html, pageUrl) {
         const title = (cleanText(link.text || "").replace(/\s+/g, " ").trim() || labels.get(key) || "").slice(0, 120);
         const current = found.get(key);
         if (!current || title.length > current.title.length) {
-            found.set(key, { url: canonicalizeUrl(link.href), title });
+            // เมนู JavaScript มักเขียนลิงก์เป็น http:// ปนมา จึงบังคับให้ตรงกับหน้าที่สแกน
+            const normalized = new URL(canonicalizeUrl(link.href));
+            normalized.protocol = new URL(pageUrl).protocol;
+            found.set(key, { url: normalized.toString(), title });
         }
     }
     return [...found.values()];

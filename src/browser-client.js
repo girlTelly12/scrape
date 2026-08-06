@@ -203,6 +203,52 @@ async function createWorkerPage(context, logger) {
     return installWorkerPageGuards(page, logger);
 }
 
+/**
+ * สระแท็บสำหรับหน้า HTML — ใช้ซ้ำแทนการเปิด/ปิดแท็บใหม่ทุกหน้า
+ * การสร้างแท็บใหม่ทำให้ Chrome ดันหน้าต่างขึ้นมาแย่งโฟกัสจากงานที่ผู้ใช้ทำอยู่
+ * ตั้ง BROWSER_PAGE_POOL_MAX=0 เพื่อกลับไปใช้พฤติกรรมเดิม
+ */
+const htmlPagePools = new WeakMap();
+
+function htmlPoolLimit() {
+    const raw = Number(process.env.BROWSER_PAGE_POOL_MAX);
+    if (!Number.isFinite(raw)) return 4;
+    return Math.max(0, Math.min(16, Math.floor(raw)));
+}
+
+function getHtmlPool(context) {
+    if (!htmlPagePools.has(context)) htmlPagePools.set(context, []);
+    return htmlPagePools.get(context);
+}
+
+async function acquireHtmlPage(context, logger) {
+    if (htmlPoolLimit() > 0) {
+        const pool = getHtmlPool(context);
+        while (pool.length) {
+            const page = pool.pop();
+            if (page && !page.isClosed()) return page;
+        }
+    }
+    return createWorkerPage(context, logger);
+}
+
+async function releaseHtmlPage(context, page, logger) {
+    if (!page || page.isClosed()) return;
+    const limit = htmlPoolLimit();
+    const pool = getHtmlPool(context);
+    if (limit <= 0 || pool.length >= limit) {
+        await closeWorkerPage(page, logger);
+        return;
+    }
+    try {
+        // ล้าง Referer ของงานก่อนหน้า ไม่ให้ติดไปกับหน้าถัดไป
+        await page.setExtraHTTPHeaders({});
+        pool.push(page);
+    } catch {
+        await closeWorkerPage(page, logger);
+    }
+}
+
 async function closeWorkerPage(page, logger) {
     if (!page || page.isClosed()) return;
     const closeTimeoutMs = browserNumberEnv("BROWSER_TAB_CLOSE_TIMEOUT_MS", 2500, {
@@ -802,7 +848,18 @@ async function extractRenderedImageFromAllFrames(page, assetUrl, requestOptions 
     return null;
 }
 
+/**
+ * Playwright ต้องดันแท็บขึ้นมาหน้าสุดก่อนถ่าย screenshot ซึ่งแย่งโฟกัสจากผู้ใช้
+ * ตั้ง BROWSER_ALLOW_SCREENSHOT_FALLBACK=false เพื่อปิด แลกกับการกู้รูปที่โดน hotlink block ไม่ได้
+ */
+function screenshotFallbackEnabled() {
+    const raw = process.env.BROWSER_ALLOW_SCREENSHOT_FALLBACK;
+    if (raw === undefined || raw === null || String(raw).trim() === "") return true;
+    return !["0", "false", "no", "off"].includes(String(raw).trim().toLowerCase());
+}
+
 async function screenshotRenderedAssetElement(page, assetUrl, requestOptions = {}) {
+    if (!screenshotFallbackEnabled()) return null;
     assertNotStopped(requestOptions.shouldStop);
     const minBytes = Math.max(1000, Number(process.env.BROWSER_ELEMENT_SCREENSHOT_MIN_BYTES || 1500));
     const timeout = Math.max(5000, Number(process.env.BROWSER_IMAGE_RENDER_TIMEOUT_MS || 30000));
@@ -1437,7 +1494,7 @@ async function captureRenderedImagesFromPage(pageUrl, logger, requestOptions = {
                 let result = sourceUrl ? findCachedAsset(cache, sourceUrl) : null;
                 if (!result && linkedOriginalUrl) result = findCachedAsset(cache, linkedOriginalUrl);
 
-                if (!result) {
+                if (!result && screenshotFallbackEnabled()) {
                     const screenshot = await image
                         .screenshot({
                             type: "png",
@@ -1512,7 +1569,10 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
         if (fastRaw) return fastRaw;
     }
 
-    const page = await createWorkerPage(context, logger);
+    // หน้า HTML ใช้แท็บซ้ำจากสระ ลดการเปิดแท็บใหม่ที่ทำให้ Chrome แย่งโฟกัส
+    const page = isHtml
+        ? await acquireHtmlPage(context, logger)
+        : await createWorkerPage(context, logger);
     if (requestOptions.referer) {
         await page.setExtraHTTPHeaders({ Referer: requestOptions.referer });
     }
@@ -1652,7 +1712,8 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
             finalUrl: response.url(),
         };
     } finally {
-        await closeWorkerPage(page, logger);
+        if (isHtml) await releaseHtmlPage(context, page, logger);
+        else await closeWorkerPage(page, logger);
     }
 }
 

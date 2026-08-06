@@ -443,6 +443,154 @@
         return String(document.getElementById(id)?.value || "").trim();
     }
 
+    const discoverButton = document.getElementById("discover-topics-btn");
+    const discoverPanel = document.getElementById("discover-panel");
+    const discoverList = document.getElementById("discover-list");
+    const discoverCount = document.getElementById("discover-count");
+    const discoverFilter = document.getElementById("discover-filter");
+    const bulkButton = document.getElementById("bulk-topics-btn");
+    const bulkPanel = document.getElementById("bulk-panel");
+    const bulkInput = document.getElementById("bulk-input");
+    let discoveredTopics = [];
+
+    function renderDiscovered() {
+        if (!discoverList) return;
+        const keyword = String(discoverFilter?.value || "").trim().toLowerCase();
+        discoverList.textContent = "";
+        let shown = 0;
+
+        discoveredTopics.forEach((topic, index) => {
+            const haystack = `${topic.title} ${topic.url}`.toLowerCase();
+            if (keyword && !haystack.includes(keyword)) return;
+            shown += 1;
+
+            const row = document.createElement("label");
+            row.className = "discover-item";
+
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.checked = topic.checked !== false;
+            box.addEventListener("change", () => {
+                discoveredTopics[index].checked = box.checked;
+            });
+
+            const text = document.createElement("span");
+            const name = document.createElement("strong");
+            name.textContent = topic.title || "(ไม่มีชื่อ — ระบบจะตั้งชื่อตารางให้อัตโนมัติ)";
+            const url = document.createElement("span");
+            url.className = "discover-url";
+            url.textContent = topic.url;
+            text.appendChild(name);
+            text.appendChild(url);
+
+            row.appendChild(box);
+            row.appendChild(text);
+            discoverList.appendChild(row);
+        });
+
+        if (discoverCount) {
+            const picked = discoveredTopics.filter((topic) => topic.checked !== false).length;
+            discoverCount.textContent =
+                `พบ ${discoveredTopics.length} หมวด | เลือกไว้ ${picked}` +
+                (keyword ? ` | แสดง ${shown}` : "");
+        }
+    }
+
+    async function discoverTopics() {
+        if (!discoverButton) return;
+        const pageUrl = valueOf("siteUrl") || valueOf("procurementUrl") || valueOf("publicRelationsUrl");
+        if (!pageUrl) {
+            alert("กรุณากรอกช่อง “เว็บไซต์หลัก” ก่อน แล้วกดค้นหาหมวดอีกครั้ง");
+            return;
+        }
+
+        const originalText = discoverButton.textContent;
+        try {
+            discoverButton.disabled = true;
+            discoverButton.textContent = "กำลังค้นหา...";
+            const data = await fetchJson(
+                "/api/topics/discover",
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pageUrl }),
+                },
+                120000,
+            );
+            discoveredTopics = (data.topics || []).map((topic) => ({ ...topic, checked: true }));
+            if (!discoveredTopics.length) {
+                alert("ไม่พบหมวดข่าวจากเมนูของเว็บไซต์นี้ ลองใช้ปุ่ม “วางหลายบรรทัด” แทน");
+                return;
+            }
+            if (discoverPanel) discoverPanel.hidden = false;
+            if (bulkPanel) bulkPanel.hidden = true;
+            if (discoverFilter) discoverFilter.value = "";
+            renderDiscovered();
+        } catch (error) {
+            alert(`ค้นหาหมวดไม่สำเร็จ: ${error.message}`);
+        } finally {
+            discoverButton.disabled = false;
+            discoverButton.textContent = originalText;
+        }
+    }
+
+    function parseBulkInput(text) {
+        return String(text || "")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => {
+                const match = /^(.*?)[,|\t]\s*(https?:\/\/\S+)$/i.exec(line);
+                if (match) return { title: match[1].trim(), url: match[2].trim() };
+                if (/^https?:\/\/\S+$/i.test(line)) return { title: "", url: line };
+                return null;
+            })
+            .filter(Boolean);
+    }
+
+    if (discoverButton) discoverButton.addEventListener("click", discoverTopics);
+    if (discoverFilter) discoverFilter.addEventListener("input", renderDiscovered);
+    document.getElementById("discover-all")?.addEventListener("click", () => {
+        discoveredTopics.forEach((topic) => (topic.checked = true));
+        renderDiscovered();
+    });
+    document.getElementById("discover-none")?.addEventListener("click", () => {
+        discoveredTopics.forEach((topic) => (topic.checked = false));
+        renderDiscovered();
+    });
+    document.getElementById("discover-close")?.addEventListener("click", () => {
+        if (discoverPanel) discoverPanel.hidden = true;
+    });
+    document.getElementById("discover-apply")?.addEventListener("click", () => {
+        const picked = discoveredTopics.filter((topic) => topic.checked !== false);
+        const added = appendOtherTopics(picked);
+        if (discoverPanel) discoverPanel.hidden = true;
+        alert(`เพิ่มแล้ว ${added} หัวข้อ${picked.length - added > 0 ? ` (ข้าม ${picked.length - added} รายการที่ซ้ำ)` : ""}`);
+    });
+
+    if (bulkButton) {
+        bulkButton.addEventListener("click", () => {
+            if (!bulkPanel) return;
+            bulkPanel.hidden = !bulkPanel.hidden;
+            if (discoverPanel) discoverPanel.hidden = true;
+            if (!bulkPanel.hidden) bulkInput?.focus();
+        });
+    }
+    document.getElementById("bulk-close")?.addEventListener("click", () => {
+        if (bulkPanel) bulkPanel.hidden = true;
+    });
+    document.getElementById("bulk-apply")?.addEventListener("click", () => {
+        const items = parseBulkInput(bulkInput?.value);
+        if (!items.length) {
+            alert("ไม่พบลิงก์ที่ใช้ได้ กรุณาวางทีละบรรทัด และให้ลิงก์ขึ้นต้นด้วย http:// หรือ https://");
+            return;
+        }
+        const added = appendOtherTopics(items);
+        if (bulkInput) bulkInput.value = "";
+        if (bulkPanel) bulkPanel.hidden = true;
+        alert(`เพิ่มแล้ว ${added} หัวข้อ${items.length - added > 0 ? ` (ข้าม ${items.length - added} รายการที่ซ้ำ)` : ""}`);
+    });
+
     if (addOtherTopicButton) {
         addOtherTopicButton.addEventListener("click", () => {
             createOtherTopicRow();
