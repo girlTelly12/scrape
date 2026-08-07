@@ -653,6 +653,26 @@
 
             <div class="status" id="status-box">สถานะ: ยังไม่เริ่มงาน</div>
 
+            <section class="audit-section" id="truncated-section" hidden>
+                <h2>ตารางที่ชื่อถูกย่อ</h2>
+                <p class="muted" style="margin: 0">
+                    ชื่อหัวข้อยาวเกินที่ MySQL สร้างไฟล์ตารางได้ ระบบจึงย่อให้อัตโนมัติและต่อท้ายด้วยรหัสกันชื่อซ้ำ
+                    ชื่อเต็มถูกเก็บไว้ครบในตาราง <code>topic_registry</code>
+                </p>
+                <div class="audit-table-wrap">
+                    <table class="audit-table">
+                        <thead>
+                            <tr>
+                                <th>ชื่อตารางจริง (ใช้ค้นใน phpMyAdmin)</th>
+                                <th>ชื่อเต็มที่กรอกไว้</th>
+                                <th>คัดลอก</th>
+                            </tr>
+                        </thead>
+                        <tbody id="truncated-table-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
             <section class="audit-section" id="file-audit-section">
                 <h2>ตรวจสอบไฟล์แนบ</h2>
                 <p class="muted" style="margin: 0">
@@ -715,6 +735,6 @@
             <div class="logs" id="log-output">[ยังไม่มี log]</div>
         </div>
 
-        <script src="/app.js?v=9"></script>
+        <script src="/app.js?v=10"></script>
     </body>
 </html>

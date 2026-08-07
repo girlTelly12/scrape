@@ -17,6 +17,7 @@ const {
     insertMigrationPageRows,
     insertMigrationAssetRows,
     parseCustomTopicTableName,
+    recordTopicRegistry,
 } = require("./db");
 const { sendLineNotify } = require("./line-notify");
 const { getVendorAdapter, resolveVendorAdapter } = require("./vendors/registry");
@@ -105,6 +106,8 @@ class JobRunner {
         this.vendorDetection = null;
         this.fileAuditRows = [];
         this.fileAuditReport = null;
+        // เก็บระดับ instance ไม่ใช่ใน lastResult เพราะต้องให้เห็นระหว่างงานรันและตอนงานล้มด้วย
+        this.truncatedTopics = [];
         this.databaseEnabled = null;
         this.databaseMode = getDatabaseMode();
         this.databaseError = null;
@@ -143,6 +146,7 @@ class JobRunner {
             fileAuditSummary: summarizeFileAudit(this.fileAuditRows),
             fileAuditRowsCount: this.fileAuditRows.length,
             fileAuditReportAvailable: Boolean(this.fileAuditReport),
+            truncatedTopics: this.truncatedTopics,
         };
     }
 
@@ -346,6 +350,8 @@ class JobRunner {
                 const rowNumber = index + 1;
                 const otherTopicUrl = String(rawTopic.url || "").trim();
                 let otherTopicTitle = String(rawTopic.title || rawTopic.tableName || "").trim();
+                // เก็บชื่อดิบไว้ลง topic_registry ก่อนที่ parseCustomTopicTableName จะตัด/แทนอักขระ
+                const rawOtherTopicTitle = otherTopicTitle;
 
                 if (!otherTopicTitle && !otherTopicUrl) continue;
                 if (otherTopicTitle && !otherTopicUrl) {
@@ -364,7 +370,9 @@ class JobRunner {
                     otherTopicTitle = derived.tableName;
                 }
 
-                const parsedTopic = parseCustomTopicTableName(otherTopicTitle);
+                const parsedTopic = parseCustomTopicTableName(otherTopicTitle, {
+                    databaseName: this.databaseName,
+                });
                 if (!parsedTopic.ok) {
                     throw new Error(`หัวข้อเพิ่มเติมลำดับ ${rowNumber}: ${parsedTopic.message}`);
                 }
@@ -376,6 +384,17 @@ class JobRunner {
                     );
                 }
                 usedTableNames.add(duplicateKey);
+
+                if (parsedTopic.truncated) {
+                    this.log(
+                        `หัวข้อลำดับ ${rowNumber}: ชื่อยาวเกินที่ MySQL สร้างไฟล์ตารางได้ ` +
+                            `จึงย่อเป็น "${parsedTopic.tableName}" — ชื่อเต็มถูกเก็บไว้ใน topic_registry.full_title`,
+                    );
+                    this.truncatedTopics.push({
+                        tableName: parsedTopic.tableName,
+                        fullTitle: parsedTopic.cleanedTitle,
+                    });
+                }
 
                 if (this.databaseEnabled) {
                     try {
@@ -392,6 +411,8 @@ class JobRunner {
                 customOtherTopics.push({
                     tableName: parsedTopic.tableName,
                     url: otherTopicUrl,
+                    fullTitle: rawOtherTopicTitle || otherTopicTitle,
+                    nameTruncated: Boolean(parsedTopic.truncated),
                 });
             }
 
@@ -402,6 +423,9 @@ class JobRunner {
                     label: `อื่นๆ (${topic.tableName})`,
                     step: `scrape-other-custom-${index + 1}`,
                     url: topic.url,
+                    tableNames: [topic.tableName],
+                    fullTitle: topic.fullTitle,
+                    nameTruncated: topic.nameTruncated,
                     run: () =>
                         vendorAdapter.scrapeNews("other", {
                             startUrl: topic.url,
@@ -438,6 +462,7 @@ class JobRunner {
                 ? {
                       key: "fullSiteMigration",
                       label: "สำรวจและย้ายข้อมูลสาธารณะทั้งเว็บไซต์",
+                      tableNames: ["migration_pages", "migration_assets"],
                       step: "scrape-full-site-migration",
                       url: effectiveConfig.siteUrl,
                       run: () =>
@@ -482,6 +507,7 @@ class JobRunner {
                       ...AONANG_NEWS_SECTIONS.map((s) => ({
                           key: s.key,
                           label: s.label,
+                          tableNames: s.tableName ? [s.tableName] : [],
                           step: `scrape-aonang-${s.key}`,
                           url: s.url,
                           run: () =>
@@ -513,6 +539,7 @@ class JobRunner {
                       {
                           key: "procurement",
                           label: "จัดซื้อจัดจ้าง",
+                          tableNames: ["procurement_files"],
                           step: "scrape-procurement",
                           url: effectiveConfig.procurementUrl,
                           run: () =>
@@ -540,6 +567,7 @@ class JobRunner {
                       {
                           key: "publicRelations",
                           label: "ประชาสัมพันธ์",
+                          tableNames: ["public_relations_files"],
                           step: "scrape-public-relations",
                           url: effectiveConfig.publicRelationsUrl,
                           run: () =>
@@ -571,6 +599,7 @@ class JobRunner {
                       {
                           key: "activity",
                           label: "ภาพกิจกรรม",
+                          tableNames: ["activity_pictures_file", "activity_details", "activity_media_files"],
                           step: "scrape-activity",
                           url: effectiveConfig.activityUrl,
                           run: () =>
@@ -608,6 +637,32 @@ class JobRunner {
             }
 
             this.log(`ส่วนที่เลือกดึงข้อมูล: ${sections.map((s) => s.label).join(", ")}`);
+
+            // บันทึกแผนที่ ตาราง -> หัวข้อเต็ม + URL ไว้ก่อนเริ่มดึง
+            // ถ้างานล้มกลางทางก็ยังตามได้ว่าตารางไหนมาจากลิงก์ไหน
+            if (this.databaseEnabled) {
+                const registryEntries = [];
+                for (const section of sections) {
+                    for (const tableName of section.tableNames || []) {
+                        registryEntries.push({
+                            tableName,
+                            sectionKey: section.key,
+                            fullTitle: section.fullTitle || section.label,
+                            sectionLabel: section.label,
+                            sourceUrl: section.url,
+                            runId: this.runId,
+                            nameTruncated: Boolean(section.nameTruncated),
+                        });
+                    }
+                }
+                try {
+                    await recordTopicRegistry(this.databaseName, registryEntries);
+                    this.log(`บันทึกแผนที่หัวข้อลง topic_registry: ${registryEntries.length} ตาราง`);
+                } catch (error) {
+                    if (this.databaseMode === "required") throw error;
+                    this.log(`บันทึก topic_registry ไม่สำเร็จ: ${error.message}`);
+                }
+            }
 
             const stepDelayMs = getStepDelayMs();
             const stepWaitCount = Math.max(0, sections.length - 1);
@@ -678,10 +733,20 @@ class JobRunner {
                 vendorConfidence: this.vendorConfidence,
                 adapterId: vendorAdapter.id,
                 selectedSections: sections.map((s) => s.key),
+                truncatedTopics: this.truncatedTopics,
                 fileAuditSummary: summarizeFileAudit(this.fileAuditRows),
                 ...sectionResults,
             };
             this.currentStep = "done";
+            if (this.truncatedTopics.length) {
+                this.log(
+                    `สรุป: มี ${this.truncatedTopics.length} หัวข้อที่ชื่อตารางถูกย่อ — ` +
+                        "ดูชื่อเต็มได้ที่ตาราง topic_registry หรือรัน node scripts/check-db-data.js",
+                );
+                for (const t of this.truncatedTopics) {
+                    this.log(`  ${t.tableName}  <-  ${t.fullTitle}`);
+                }
+            }
             this.log("งานทั้งหมดเสร็จสมบูรณ์");
         } catch (error) {
             if (error && error.message === STOP_ERROR) {
@@ -736,6 +801,7 @@ class JobRunner {
 module.exports = {
     JobRunner,
     isScrapeAonangWebsiteName,
+    toDatabaseName,
 };
 
 function toDatabaseName(websiteName) {

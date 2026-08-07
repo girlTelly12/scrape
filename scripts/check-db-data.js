@@ -121,6 +121,37 @@ async function main() {
         const empty = [...counts.entries()].filter(([, n]) => n === 0).map(([k]) => k);
         if (empty.length) console.log(`\n  ตารางที่ยังว่าง (${empty.length}): ${empty.join(", ")}`);
 
+        // แผนที่ ตาราง -> หัวข้อเต็ม + URL
+        if (counts.has("topic_registry")) {
+            const [reg] = await c.query(
+                "SELECT table_name, full_title, source_url, name_truncated FROM topic_registry ORDER BY table_name",
+            );
+            console.log(`\n  --- topic_registry (${reg.length} รายการ) ---`);
+            if (!reg.length) {
+                console.log("  ยังว่าง — จะถูกเติมตอนสั่งงานรอบถัดไป");
+            } else {
+                for (const r of reg) {
+                    const rows = counts.get(r.table_name);
+                    const rowText = rows === undefined ? "ไม่มีตาราง" : `${rows} แถว`;
+                    const mark = r.name_truncated ? " ⚠ชื่อถูกย่อ" : "";
+                    console.log(`  ${String(r.table_name).padEnd(34)} ${rowText.padStart(11)}  ${r.source_url || "-"}${mark}`);
+                    if (r.full_title && r.full_title !== r.table_name) {
+                        console.log(`  ${" ".repeat(34)} ${" ".repeat(11)}  ชื่อเต็ม: ${r.full_title}`);
+                    }
+                }
+                const cut = reg.filter((r) => r.name_truncated);
+                if (cut.length) {
+                    console.log(`\n  ⚠ ตารางที่ชื่อถูกย่อ ${cut.length} รายการ — ชื่อจริงดูได้ที่คอลัมน์ full_title`);
+                }
+                const missing = [...counts.keys()].filter(
+                    (t) => !SECTION_TO_FOLDER[t] && !reg.some((r) => r.table_name === t),
+                );
+                if (missing.length) {
+                    console.log(`\n  ตารางที่ยังไม่มีใน registry (${missing.length}): ${missing.join(", ")}`);
+                }
+            }
+        }
+
         // เทียบกับไฟล์บนดิสก์
         const outDir = path.join(projectRoot, "downloads", db);
         console.log(`\n  --- เทียบกับไฟล์ใน downloads/${db} ---`);

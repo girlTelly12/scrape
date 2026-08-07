@@ -1,4 +1,5 @@
 const fs = require("fs");
+const crypto = require("crypto");
 const { AONANG_DATABASE_NAME } = require("./scrapers/aonang");
 const { createDatabaseSql, createDbConnection, getDbProfile, tableOptionsSql } = require("./db-profile");
 
@@ -187,6 +188,7 @@ const RESERVED_TOPIC_TABLE_NAMES_LOWER = new Set([
     "activity_media_files",
     "file_download_audit",
     "site_vendor_profile",
+    "topic_registry",
     "migration_pages",
     "migration_assets",
     "aonang_bid_winner_files",
@@ -195,9 +197,21 @@ const RESERVED_TOPIC_TABLE_NAMES_LOWER = new Set([
 ]);
 
 // MySQL เก็บแต่ละตารางเป็นไฟล์ และเข้ารหัสอักขระนอก [0-9A-Za-z$_] ในชื่อไฟล์เป็น @XXXX (5 ตัวอักษร)
-// ภาษาไทย 1 ตัว จึงกินชื่อไฟล์ 5 ตัว — ทดสอบบน MariaDB 10.4/Windows แล้วพังที่ 220 ผ่านที่ 215
-// เกินลิมิตจะได้ errno 38 "Filename too long" ตอน CREATE TABLE ไม่ใช่ตอนตรวจชื่อ
-const TABLE_FILE_NAME_MAX = 215;
+// ภาษาไทย 1 ตัว จึงกินชื่อไฟล์ 5 ตัว
+//
+// ลิมิตจริงคือความยาว "path ทั้งเส้น" ไม่ใช่แค่ชื่อไฟล์:
+//   datadir + ชื่อฐาน + "\" + ชื่อไฟล์ตาราง + ".ibd"  <=  253
+// ทดสอบบน MariaDB 10.4/Windows: ฐาน scrape_a (8 ตัว) รับชื่อไฟล์ได้ 220
+// ส่วนฐาน scrape_tiwang (13 ตัว) รับได้ 215 — ต่างกันเท่าความยาวชื่อฐานพอดี
+// เกินลิมิตจะได้ errno 38 "Filename too long" หรือ ER_BAD_DB_ERROR ตอน CREATE TABLE
+const MYSQL_TABLE_PATH_MAX = 253;
+const MYSQL_DATA_DIR_LENGTH = Number(process.env.MYSQL_DATA_DIR_LENGTH || 20); // "C:\xampp\mysql\data\"
+const FALLBACK_DATABASE_NAME_LENGTH = 32; // เผื่อไว้เมื่อไม่รู้ชื่อฐาน
+
+function tableFileNameBudget(databaseName) {
+    const dbLength = String(databaseName || "").length || FALLBACK_DATABASE_NAME_LENGTH;
+    return Math.max(60, MYSQL_TABLE_PATH_MAX - MYSQL_DATA_DIR_LENGTH - dbLength - 1 - 4);
+}
 
 function encodedTableFileNameLength(name) {
     let total = 0;
@@ -206,12 +220,32 @@ function encodedTableFileNameLength(name) {
 }
 
 /**
+ * ย่อชื่อที่ยาวเกินให้พอดี แล้วต่อท้ายด้วย hash ของชื่อเต็ม
+ * hash กันชื่อชนกันเมื่อสองหัวข้อขึ้นต้นเหมือนกัน — เป็น ASCII จึงกินชื่อไฟล์แค่ 5 ตัว
+ * ชื่อเต็มไม่หาย เพราะถูกเก็บไว้ใน topic_registry.full_title
+ */
+function shortenTableName(cleaned, fileNameBudget) {
+    const suffix = `_${crypto.createHash("sha1").update(cleaned).digest("hex").slice(0, 4)}`;
+    const budget = fileNameBudget - suffix.length;
+    let head = "";
+    let used = 0;
+    for (const ch of cleaned) {
+        const cost = /[0-9A-Za-z$_]/.test(ch) ? 1 : 5;
+        if (used + cost > budget || head.length >= 64 - suffix.length) break;
+        head += ch;
+        used += cost;
+    }
+    return `${head.replace(/_+$/, "")}${suffix}`;
+}
+
+/**
  * แปลงชื่อหัวข้อที่ผู้ใช้พิมพ์เป็นชื่อตาราง MySQL (รองรับไทย/อังกฤษ)
  * ต้องเก็บ \p{M} ไว้ด้วย เพราะสระบน/ล่างและวรรณยุกต์ไทย (ิ ี ั ุ ่ ้ ็) เป็น Mark ไม่ใช่ Letter
  * ถ้าตัดทิ้ง "รายงานการประชุม" จะกลายเป็น "รายงานการประช_ม"
  * @returns {{ ok: true, tableName: string } | { ok: false, message: string }}
  */
-function parseCustomTopicTableName(raw) {
+function parseCustomTopicTableName(raw, options = {}) {
+    const fileNameBudget = tableFileNameBudget(options.databaseName);
     const s = String(raw || "")
         .trim()
         .replace(/\s+/g, "_");
@@ -222,21 +256,19 @@ function parseCustomTopicTableName(raw) {
     if (!cleaned) {
         return { ok: false, message: "ชื่อหัวข้อว่างหรือมีแต่สัญลักษณ์ที่ใช้เป็นชื่อตารางไม่ได้" };
     }
-    if (cleaned.length > 64) {
-        return { ok: false, message: "ชื่อหัวข้อยาวเกินไป (หลังจัดรูปแบบสูงสุด 64 ตัวอักษร)" };
-    }
-    if (encodedTableFileNameLength(cleaned) > TABLE_FILE_NAME_MAX) {
-        return {
-            ok: false,
-            message:
-                `ชื่อหัวข้อยาวเกินที่ MySQL สร้างไฟล์ตารางได้ (ตอนนี้ ${cleaned.length} ตัวอักษร) — ` +
-                `ภาษาไทยใช้ได้ไม่เกิน ${Math.floor(TABLE_FILE_NAME_MAX / 5)} ตัวอักษร กรุณาย่อชื่อให้สั้นลง`,
-        };
-    }
-    if (RESERVED_TOPIC_TABLE_NAMES_LOWER.has(cleaned.toLowerCase())) {
+    const tooLong = cleaned.length > 64 || encodedTableFileNameLength(cleaned) > fileNameBudget;
+    const tableName = tooLong ? shortenTableName(cleaned, fileNameBudget) : cleaned;
+
+    if (RESERVED_TOPIC_TABLE_NAMES_LOWER.has(tableName.toLowerCase())) {
         return { ok: false, message: "ชื่อหัวข้อชนกับตารางระบบ กรุณาใช้ชื่ออื่น" };
     }
-    return { ok: true, tableName: cleaned };
+    return {
+        ok: true,
+        tableName,
+        truncated: tooLong,
+        // ชื่อหลังล้างอักขระแต่ยังไม่ตัดสั้น ใช้บอกผู้ใช้ว่าถูกย่อมาจากอะไร
+        cleanedTitle: cleaned,
+    };
 }
 
 /**
@@ -342,6 +374,74 @@ async function syncNewsFileTableLikeProcurement(conn, tableName) {
     );
     await ensureColumn(conn, tableName, "downloaded_at", "`downloaded_at` DATETIME NULL");
     await normalizeDateColumn(conn, tableName, "published_text");
+}
+
+/**
+ * แผนที่ "ตาราง -> หัวข้อเต็ม + URL ต้นทาง"
+ * ชื่อตารางถูกจำกัดความยาวและตัดอักขระพิเศษทิ้ง เลยอ่านย้อนไม่ได้ว่ามาจากหัวข้อ/ลิงก์ไหน
+ * ตารางนี้เก็บของเดิมไว้ทั้งหมด จะได้ไม่ต้องไล่เดาจาก listing_url อีก
+ */
+async function syncTopicRegistryTable(conn) {
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS topic_registry (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        table_name VARCHAR(64) NOT NULL,
+        section_key VARCHAR(160) NULL,
+        full_title TEXT NULL,
+        section_label VARCHAR(255) NULL,
+        source_url LONGTEXT NULL,
+        run_id VARCHAR(80) NULL,
+        name_truncated TINYINT(1) NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        UNIQUE KEY uq_topic_registry_table (table_name)
+      ) ${tableOptionsSql(getDbConfig())}
+    `);
+    await ensureColumn(conn, "topic_registry", "name_truncated", "`name_truncated` TINYINT(1) NOT NULL DEFAULT 0");
+}
+
+/**
+ * บันทึก/อัปเดตรายการหัวข้อ — เรียกซ้ำได้ ถ้ามีชื่อตารางเดิมจะอัปเดตทับ
+ * @param {Array<{tableName: string, sectionKey?: string, fullTitle?: string, sectionLabel?: string, sourceUrl?: string, runId?: string}>} entries
+ */
+async function recordTopicRegistry(databaseName, entries) {
+    if (!entries || !entries.length) return;
+    const config = getDbConfig(databaseName);
+    const conn = await createDbConnection(config);
+    try {
+        await syncTopicRegistryTable(conn);
+        const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+        const sql = `
+          INSERT INTO topic_registry
+          (table_name, section_key, full_title, section_label, source_url, run_id,
+           name_truncated, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            section_key = VALUES(section_key),
+            full_title = VALUES(full_title),
+            section_label = VALUES(section_label),
+            source_url = VALUES(source_url),
+            run_id = VALUES(run_id),
+            name_truncated = VALUES(name_truncated),
+            updated_at = VALUES(updated_at)
+        `;
+        for (const entry of entries) {
+            if (!entry || !entry.tableName) continue;
+            await conn.execute(sql, [
+                assertQuotableTableIdentifier(entry.tableName),
+                entry.sectionKey ?? null,
+                entry.fullTitle ?? null,
+                entry.sectionLabel ?? null,
+                entry.sourceUrl ?? null,
+                entry.runId ?? null,
+                entry.nameTruncated ? 1 : 0,
+                now,
+                now,
+            ]);
+        }
+    } finally {
+        await conn.end();
+    }
 }
 
 async function syncSiteVendorProfileTable(conn) {
@@ -502,6 +602,7 @@ async function initDatabase(databaseName, logger) {
     const conn = await createDbConnection(config);
     try {
         if (logger) logger(`Connected MySQL: ${config.host}:${config.port}/${config.database}`);
+        await syncTopicRegistryTable(conn);
         await syncSiteVendorProfileTable(conn);
         await syncFileAuditTable(conn);
         await syncMigrationTables(conn);
@@ -1092,4 +1193,5 @@ module.exports = {
     normalizeAllScrapeDatabases,
     parseCustomTopicTableName,
     deriveOtherTopicTableNameFromUrl,
+    recordTopicRegistry,
 };

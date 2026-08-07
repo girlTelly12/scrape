@@ -1,12 +1,21 @@
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
-const { JobRunner, isScrapeAonangWebsiteName } = require("./src/job-runner");
+const { JobRunner, isScrapeAonangWebsiteName, toDatabaseName } = require("./src/job-runner");
 const {
     deriveOtherTopicTableNameFromUrl,
+    getDbConfig,
     normalizeAllScrapeDatabases,
     parseCustomTopicTableName,
 } = require("./src/db");
+const { AONANG_DATABASE_NAME } = require("./src/scrapers/aonang");
+
+/** ชื่อฐานที่งานจะใช้จริง — ต้องรู้ก่อน เพราะลิมิตความยาวชื่อตารางขึ้นกับความยาวชื่อฐาน */
+function resolveDatabaseName(websiteName, siteUrl) {
+    const name = String(websiteName || "").trim() || deriveWebsiteNameFromUrl(String(siteUrl || "").trim());
+    const outputName = isScrapeAonangWebsiteName(name) ? AONANG_DATABASE_NAME : toDatabaseName(name);
+    return getDbConfig(outputName).database;
+}
 const { detectWebsiteVendor } = require("./src/vendors/detector");
 const { listVendorAdapters } = require("./src/vendors/registry");
 const { fetchHtml } = require("./src/common");
@@ -54,7 +63,7 @@ function toBoolean(value, fallback = false) {
  * แปลงข้อมูลหัวข้อเพิ่มเติมจากหน้าเว็บเป็นรายการที่พร้อมส่งให้ JobRunner
  * รองรับทั้งรูปแบบใหม่ otherTopics[] และรูปแบบเดิม otherTopicTitle/otherTopicUrl
  */
-function normalizeOtherTopics(body) {
+function normalizeOtherTopics(body, databaseName) {
     const rawTopics = Array.isArray(body.otherTopics)
         ? body.otherTopics.slice(0, 50)
         : [];
@@ -94,7 +103,7 @@ function normalizeOtherTopics(body) {
             title = derived.tableName;
         }
 
-        const parsed = parseCustomTopicTableName(title);
+        const parsed = parseCustomTopicTableName(title, { databaseName });
         if (!parsed.ok) {
             throw new Error(`หัวข้อเพิ่มเติมลำดับ ${rowNumber}: ${parsed.message}`);
         }
@@ -108,7 +117,9 @@ function normalizeOtherTopics(body) {
         usedTableNames.add(duplicateKey);
 
         normalized.push({
-            title: parsed.tableName,
+            // ส่งชื่อที่ผู้ใช้พิมพ์ต่อไปด้วย ไม่งั้น topic_registry เก็บได้แค่ชื่อที่แปลงแล้ว
+            title,
+            tableName: parsed.tableName,
             url,
         });
     });
@@ -151,7 +162,7 @@ app.post("/api/vendor/detect", async (req, res) => {
             procurementUrl: String(body.procurementUrl || "").trim(),
             publicRelationsUrl: String(body.publicRelationsUrl || "").trim(),
             activityUrl: String(body.activityUrl || "").trim(),
-            otherTopics: normalizeOtherTopics(body),
+            otherTopics: normalizeOtherTopics(body, resolveDatabaseName(body.websiteName, body.siteUrl)),
             vendorMode: String(body.vendorMode || "auto").trim().toLowerCase(),
             vendorId: String(body.vendorId || "").trim().toLowerCase(),
         };
@@ -266,7 +277,7 @@ app.post("/api/start", async (req, res) => {
         const activityUrl = String(req.body.activityUrl || "").trim();
         const lineNotifyToken = String(req.body.lineNotifyToken || "").trim();
         const lineMessage = String(req.body.lineMessage || "").trim();
-        const otherTopics = normalizeOtherTopics(req.body || {});
+        const otherTopics = normalizeOtherTopics(req.body || {}, resolveDatabaseName(websiteName, siteUrl));
         const vendorMode = String(req.body.vendorMode || "auto").trim().toLowerCase();
         const vendorId = String(req.body.vendorId || "").trim().toLowerCase();
         const autoFillSections = false;

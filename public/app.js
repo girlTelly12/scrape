@@ -59,6 +59,56 @@
         }
     }
 
+    /**
+     * ตารางที่ชื่อถูกย่อ — ซ่อนไว้เมื่อไม่มีรายการ
+     * อ่านจาก status ระดับบน ไม่ใช่ lastResult จึงเห็นได้ตั้งแต่ระหว่างรันและตอนงานล้ม
+     */
+    function renderTruncatedTopics(topics) {
+        const section = document.getElementById("truncated-section");
+        const body = document.getElementById("truncated-table-body");
+        if (!section || !body) return;
+
+        if (!topics.length) {
+            section.hidden = true;
+            body.textContent = "";
+            return;
+        }
+
+        body.textContent = "";
+        for (const topic of topics) {
+            const row = document.createElement("tr");
+
+            const nameCell = document.createElement("td");
+            const code = document.createElement("code");
+            code.textContent = topic.tableName;
+            nameCell.appendChild(code);
+
+            const fullCell = document.createElement("td");
+            fullCell.textContent = topic.fullTitle || "-";
+
+            const copyCell = document.createElement("td");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = "คัดลอก";
+            button.addEventListener("click", async () => {
+                try {
+                    await navigator.clipboard.writeText(topic.tableName);
+                    button.textContent = "คัดลอกแล้ว";
+                } catch {
+                    button.textContent = "คัดลอกไม่ได้";
+                }
+                setTimeout(() => {
+                    button.textContent = "คัดลอก";
+                }, 1500);
+            });
+            copyCell.appendChild(button);
+
+            row.append(nameCell, fullCell, copyCell);
+            body.appendChild(row);
+        }
+        section.hidden = false;
+    }
+
     function renderStatus(status) {
         const lines = [
             `website: ${status.websiteName || "-"}`,
@@ -78,6 +128,7 @@
         ];
         if (status.lastResult) lines.push(`result: ${JSON.stringify(status.lastResult)}`);
         statusBox.textContent = `สถานะ:\n${lines.join("\n")}`;
+        renderTruncatedTopics(status.truncatedTopics || []);
         if (startButton) startButton.disabled = status.running;
         if (stopButton) stopButton.disabled = !status.running || status.stopRequested;
     }
