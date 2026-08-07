@@ -154,6 +154,36 @@ async function getBrowserState(logger) {
     return browserStatePromise;
 }
 
+/**
+ * ปิดแท็บที่ค้างใน pool แล้วตัดการเชื่อมต่อ Browser
+ * โหมด cdp จะตัดแค่การเชื่อมต่อ ไม่ปิด Chrome ของผู้ใช้ ส่วนโหมด persistent จะปิด Browser ที่เราเปิดเอง
+ * server.js ไม่ต้องเรียก เพราะต้องคาการเชื่อมต่อไว้ข้ามงาน แต่ process สั้นๆ อย่างเทสต์/CLI
+ * ต้องเรียก ไม่งั้น CDP socket ค้างและ Node ไม่ยอม exit
+ */
+async function closeBrowserConnection(logger) {
+    if (!browserStatePromise) return;
+    const pending = browserStatePromise;
+    browserStatePromise = null;
+
+    let state;
+    try {
+        state = await pending;
+    } catch {
+        return;
+    }
+
+    const pool = htmlPagePools.get(state.context) || [];
+    while (pool.length) await closeWorkerPage(pool.pop(), logger);
+    refererAssetCache.clear();
+
+    try {
+        if (state.browser) await state.browser.close();
+        else await state.context.close();
+    } catch (error) {
+        if (logger) logger(`ปิดการเชื่อมต่อ Browser ไม่สำเร็จ: ${error.message}`);
+    }
+}
+
 
 function browserNumberEnv(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
     const raw = Number(process.env[name]);
@@ -1882,5 +1912,6 @@ async function captureRenderedPageSnapshot(url, logger, requestOptions = {}) {
 module.exports = {
     captureRenderedImagesFromPage,
     captureRenderedPageSnapshot,
+    closeBrowserConnection,
     downloadWithBrowser,
 };

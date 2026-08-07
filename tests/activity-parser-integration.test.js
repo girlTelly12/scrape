@@ -4,6 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { scrapeActivityPictures } = require("../src/scrapers/activity");
+const { closeBrowserConnection } = require("../src/browser-client");
 
 async function main() {
     const png = Buffer.from(
@@ -112,6 +113,8 @@ async function main() {
         // ต้องตัด connection ที่ค้างทิ้งก่อน ไม่งั้นเทสต์แฮงก์ทั้งที่ assert ผ่านหมดแล้ว
         server.closeAllConnections();
         await new Promise((resolve) => server.close(resolve));
+        // ตัด CDP socket ด้วย ไม่งั้น assert ผ่านแล้วแต่ process ไม่ยอม exit
+        await closeBrowserConnection();
         fs.rmSync(outDir, { recursive: true, force: true });
     }
 
