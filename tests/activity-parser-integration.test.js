@@ -108,6 +108,9 @@ async function main() {
         for (const row of result.rows) assert(fs.existsSync(row.localPath));
         assert(result.rows.filter((row) => row.imageName.endsWith(".png")).length >= 2);
     } finally {
+        // Chrome ที่ต่อผ่าน CDP คา keep-alive socket ไว้ ทำให้ server.close() รอไม่มีวันจบ
+        // ต้องตัด connection ที่ค้างทิ้งก่อน ไม่งั้นเทสต์แฮงก์ทั้งที่ assert ผ่านหมดแล้ว
+        server.closeAllConnections();
         await new Promise((resolve) => server.close(resolve));
         fs.rmSync(outDir, { recursive: true, force: true });
     }

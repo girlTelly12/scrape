@@ -196,6 +196,8 @@ const RESERVED_TOPIC_TABLE_NAMES_LOWER = new Set([
 
 /**
  * แปลงชื่อหัวข้อที่ผู้ใช้พิมพ์เป็นชื่อตาราง MySQL (รองรับไทย/อังกฤษ)
+ * ต้องเก็บ \p{M} ไว้ด้วย เพราะสระบน/ล่างและวรรณยุกต์ไทย (ิ ี ั ุ ่ ้ ็) เป็น Mark ไม่ใช่ Letter
+ * ถ้าตัดทิ้ง "รายงานการประชุม" จะกลายเป็น "รายงานการประช_ม"
  * @returns {{ ok: true, tableName: string } | { ok: false, message: string }}
  */
 function parseCustomTopicTableName(raw) {
@@ -203,7 +205,7 @@ function parseCustomTopicTableName(raw) {
         .trim()
         .replace(/\s+/g, "_");
     const cleaned = s
-        .replace(/[^\p{L}\p{N}_]+/gu, "_")
+        .replace(/[^\p{L}\p{M}\p{N}_]+/gu, "_")
         .replace(/_+/g, "_")
         .replace(/^_|_$/g, "");
     if (!cleaned) {
@@ -227,7 +229,7 @@ function deriveOtherTopicTableNameFromUrl(urlStr) {
         const u = new URL(String(urlStr).trim());
         const host = u.hostname.replace(/^www\./i, "").split(".").filter(Boolean)[0] || "site";
         const hostSlug = host
-            .replace(/[^\p{L}\p{N}]+/gu, "_")
+            .replace(/[^\p{L}\p{M}\p{N}]+/gu, "_")
             .replace(/_+/g, "_")
             .replace(/^_|_$/g, "") || "site";
         const cat =
@@ -236,7 +238,7 @@ function deriveOtherTopicTableNameFromUrl(urlStr) {
         const pathLast = pathParts.length ? pathParts[pathParts.length - 1] : "";
         const pathSlug = String(pathLast)
             .replace(/\.[a-z0-9]+$/i, "")
-            .replace(/[^\p{L}\p{N}]+/gu, "_")
+            .replace(/[^\p{L}\p{M}\p{N}]+/gu, "_")
             .replace(/_+/g, "_")
             .replace(/^_|_$/g, "");
         let raw;
@@ -440,7 +442,7 @@ async function syncFileAuditTable(conn) {
 
 function assertQuotableTableIdentifier(tableName) {
     const t = String(tableName || "").trim();
-    if (!t || t.length > 64 || !/^[\p{L}\p{N}_]+$/u.test(t)) {
+    if (!t || t.length > 64 || !/^[\p{L}\p{M}\p{N}_]+$/u.test(t)) {
         throw new Error("ชื่อตารางไม่ถูกต้อง");
     }
     return t;
