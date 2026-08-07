@@ -194,6 +194,17 @@ const RESERVED_TOPIC_TABLE_NAMES_LOWER = new Set([
     "aonang_council_files",
 ]);
 
+// MySQL เก็บแต่ละตารางเป็นไฟล์ และเข้ารหัสอักขระนอก [0-9A-Za-z$_] ในชื่อไฟล์เป็น @XXXX (5 ตัวอักษร)
+// ภาษาไทย 1 ตัว จึงกินชื่อไฟล์ 5 ตัว — ทดสอบบน MariaDB 10.4/Windows แล้วพังที่ 220 ผ่านที่ 215
+// เกินลิมิตจะได้ errno 38 "Filename too long" ตอน CREATE TABLE ไม่ใช่ตอนตรวจชื่อ
+const TABLE_FILE_NAME_MAX = 215;
+
+function encodedTableFileNameLength(name) {
+    let total = 0;
+    for (const ch of name) total += /[0-9A-Za-z$_]/.test(ch) ? 1 : 5;
+    return total;
+}
+
 /**
  * แปลงชื่อหัวข้อที่ผู้ใช้พิมพ์เป็นชื่อตาราง MySQL (รองรับไทย/อังกฤษ)
  * ต้องเก็บ \p{M} ไว้ด้วย เพราะสระบน/ล่างและวรรณยุกต์ไทย (ิ ี ั ุ ่ ้ ็) เป็น Mark ไม่ใช่ Letter
@@ -213,6 +224,14 @@ function parseCustomTopicTableName(raw) {
     }
     if (cleaned.length > 64) {
         return { ok: false, message: "ชื่อหัวข้อยาวเกินไป (หลังจัดรูปแบบสูงสุด 64 ตัวอักษร)" };
+    }
+    if (encodedTableFileNameLength(cleaned) > TABLE_FILE_NAME_MAX) {
+        return {
+            ok: false,
+            message:
+                `ชื่อหัวข้อยาวเกินที่ MySQL สร้างไฟล์ตารางได้ (ตอนนี้ ${cleaned.length} ตัวอักษร) — ` +
+                `ภาษาไทยใช้ได้ไม่เกิน ${Math.floor(TABLE_FILE_NAME_MAX / 5)} ตัวอักษร กรุณาย่อชื่อให้สั้นลง`,
+        };
     }
     if (RESERVED_TOPIC_TABLE_NAMES_LOWER.has(cleaned.toLowerCase())) {
         return { ok: false, message: "ชื่อหัวข้อชนกับตารางระบบ กรุณาใช้ชื่ออื่น" };
