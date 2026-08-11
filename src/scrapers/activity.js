@@ -567,6 +567,7 @@ async function scrapeActivityPictures({
     shouldStop = () => false,
     onAuditRecord = () => {},
     adapterProfile = {},
+    fileStore = null,
 }) {
     const outputDir = outDir || path.join(__dirname, "..", "..", "nongtalay-activity-downloads");
     ensureDir(outputDir);
@@ -832,59 +833,114 @@ async function scrapeActivityPictures({
             }
 
             try {
-                const result =
-                    imageJob.preloadedResult ||
-                    (await downloadBinary(imageUrl, logger, 5, {
-                        referer: effectiveActivityUrl,
-                        listingReferer: source.listingUrl,
-                        shouldStop,
-                        expectFile: true,
-                    }));
-                const { buffer, headers = {}, statusCode = 200, finalUrl = imageUrl } = result;
+                // ข้ามไฟล์ซ้ำโดยไม่ดาวน์โหลดเลย — ตรวจ index ก่อนดาวน์โหลด (URL + SHA-256 ถาวรต่อเว็บไซต์)
+                let reuseRecord = fileStore ? fileStore.find(imageUrl) : null;
 
-                if (!buffer || buffer.length === 0) {
-                    emitAudit({
-                        ...auditBase,
-                        status: "empty_file",
-                        httpStatus: statusCode,
-                        downloadable: false,
-                        downloaded: false,
-                        contentType: contentType(headers),
-                        finalUrl,
-                        errorMessage: "เซิร์ฟเวอร์ส่งรูปขนาด 0 ไบต์",
-                    });
-                    continue;
+                let result = null;
+                let imageDigest = null;
+                if (!reuseRecord) {
+                    const doDownload = () =>
+                        downloadBinary(imageUrl, logger, 5, {
+                            referer: effectiveActivityUrl,
+                            listingReferer: source.listingUrl,
+                            shouldStop,
+                            expectFile: true,
+                        });
+                    result = imageJob.preloadedResult
+                        ? imageJob.preloadedResult
+                        : fileStore
+                          ? await fileStore.claimDownload(imageUrl, doDownload)
+                          : await doDownload();
+                    const { buffer, headers = {}, statusCode = 200, finalUrl = imageUrl } = result;
+
+                    if (!buffer || buffer.length === 0) {
+                        emitAudit({
+                            ...auditBase,
+                            status: "empty_file",
+                            httpStatus: statusCode,
+                            downloadable: false,
+                            downloaded: false,
+                            contentType: contentType(headers),
+                            finalUrl,
+                            errorMessage: "เซิร์ฟเวอร์ส่งรูปขนาด 0 ไบต์",
+                        });
+                        continue;
+                    }
+
+                    if (looksLikeHtml(buffer, headers)) {
+                        emitAudit({
+                            ...auditBase,
+                            status: "invalid_content",
+                            httpStatus: statusCode,
+                            downloadable: false,
+                            downloaded: false,
+                            fileSize: buffer.length,
+                            contentType: detectedContentType(buffer, headers),
+                            finalUrl,
+                            errorMessage: "ลิงก์รูปตอบกลับเป็นหน้า HTML",
+                        });
+                        continue;
+                    }
+
+                    imageDigest = crypto.createHash("sha256").update(buffer).digest("hex");
+                    if (fileStore) {
+                        reuseRecord =
+                            fileStore.find(imageUrl, finalUrl || imageUrl) ||
+                            fileStore.findByDigest(imageDigest);
+                    }
                 }
-
-                if (looksLikeHtml(buffer, headers)) {
-                    emitAudit({
-                        ...auditBase,
-                        status: "invalid_content",
-                        httpStatus: statusCode,
-                        downloadable: false,
-                        downloaded: false,
-                        fileSize: buffer.length,
-                        contentType: detectedContentType(buffer, headers),
-                        finalUrl,
-                        errorMessage: "ลิงก์รูปตอบกลับเป็นหน้า HTML",
-                    });
-                    continue;
+                const actualContentType = reuseRecord
+                    ? reuseRecord.mimeType
+                    : detectedContentType(result.buffer, result.headers || {});
+                const finalUrl =
+                    (result && result.finalUrl) ||
+                    (reuseRecord && reuseRecord.finalUrl) ||
+                    imageUrl;
+                const downloadSource = result
+                    ? result.headers["x-scraper-source"] || result.headers["X-Scraper-Source"] || "direct"
+                    : "direct";
+                const usedRenderedCopy = result
+                    ? ["rendered-element-screenshot", "rendered-image-canvas"].includes(
+                          String(downloadSource),
+                      )
+                    : false;
+                let localPath;
+                let saveStatus = "downloaded";
+                if (reuseRecord) {
+                    localPath = reuseRecord.localPath;
+                    saveStatus = "already_exists";
+                    // จด URL ใหม่ชี้ไปไฟล์เดิม เพื่อให้รอบถัดไปข้ามได้โดยไม่ต้องดาวน์โหลด
+                    if (fileStore) {
+                        fileStore.register({
+                            url: imageUrl,
+                            finalUrl,
+                            localPath,
+                            sha256: reuseRecord.sha256 || imageDigest,
+                            fileSize: reuseRecord.fileSize,
+                            mimeType: reuseRecord.mimeType || actualContentType,
+                            addedAt: reuseRecord.addedAt,
+                        });
+                    }
+                } else {
+                    const imageName = ensureImageExtension(
+                        fileNameFromUrl(imageUrl),
+                        actualContentType,
+                    );
+                    localPath = uniqueFilePath(folderPath, imageName);
+                    fs.writeFileSync(localPath, result.buffer);
+                    if (fileStore) {
+                        fileStore.register({
+                            url: imageUrl,
+                            finalUrl,
+                            localPath,
+                            sha256: imageDigest,
+                            fileSize: result.buffer.length,
+                            mimeType: actualContentType,
+                        });
+                    }
                 }
-
-                const actualContentType = detectedContentType(buffer, headers);
-                const downloadSource =
-                    headers["x-scraper-source"] || headers["X-Scraper-Source"] || "direct";
-                const usedRenderedCopy = [
-                    "rendered-element-screenshot",
-                    "rendered-image-canvas",
-                ].includes(String(downloadSource));
-                const imageName = ensureImageExtension(
-                    fileNameFromUrl(imageUrl),
-                    actualContentType,
-                );
-                const localPath = uniqueFilePath(folderPath, imageName);
-                fs.writeFileSync(localPath, buffer);
-                const fileSize = buffer.length;
+                const fileSize = reuseRecord ? reuseRecord.fileSize : result.buffer.length;
+                const savedAt = reuseRecord ? reuseRecord.addedAt : nowSql();
                 imageCount += 1;
                 const actualImageName = path.basename(localPath);
                 rows.push({
@@ -910,7 +966,7 @@ async function scrapeActivityPictures({
                     mediaMimeType: actualContentType,
                     mediaProvider: null,
                     embedUrl: null,
-                    downloadedAt: nowSql(),
+                    downloadedAt: savedAt,
                 });
                 mediaRows.push({
                     albumId: source.albumId,
@@ -925,29 +981,34 @@ async function scrapeActivityPictures({
                     localPath,
                     fileSize,
                     mediaMimeType: actualContentType,
-                    fileSha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+                    fileSha256: imageDigest || (reuseRecord ? reuseRecord.sha256 : null),
                     pdfData: null,
                     pdfStoredInDb: false,
                     downloadSource,
                     isDownloaded: true,
-                    downloadedAt: nowSql(),
+                    downloadedAt: savedAt,
                 });
                 emitAudit({
                     ...auditBase,
-                    status: "downloaded",
-                    httpStatus: statusCode,
+                    status: saveStatus,
+                    httpStatus: result ? result.statusCode : null,
                     downloadable: true,
-                    downloaded: true,
+                    downloaded: saveStatus === "downloaded",
                     fileName: actualImageName,
                     fileSize,
                     contentType: actualContentType,
                     localPath,
                     finalUrl,
+                    duplicateOfUrl: duplicateOfUrl || (reuseRecord ? reuseRecord.url : null),
                     errorMessage: usedRenderedCopy
                         ? "URL รูปต้นฉบับถูกปฏิเสธ ระบบบันทึกสำเนาภาพที่ Chrome แสดงบนหน้าอัลบั้มแทน"
-                        : null,
+                        : reuseRecord
+                          ? `ข้ามรูปซ้ำ: เคยดาวน์โหลด ${reuseRecord.url} ไว้แล้ว`
+                          : null,
                 });
-                if (usedRenderedCopy || imageJob.preloadedResult) {
+                if (reuseRecord) {
+                    logger(`ข้ามรูปซ้ำ (ใช้ไฟล์เดิม): ${actualImageName} — ${reuseRecord.url}`);
+                } else if (usedRenderedCopy || imageJob.preloadedResult) {
                     logger(`บันทึกภาพที่ Chrome แสดงจริง: ${actualImageName}`);
                 } else {
                     logger(`บันทึกรูป: ${actualImageName}`);
@@ -1044,36 +1105,100 @@ async function scrapeActivityPictures({
             }
 
             try {
-                const result = await downloadBinary(media.url, logger, 5, {
-                    referer: effectiveActivityUrl,
-                    listingReferer: source.listingUrl,
-                    shouldStop,
-                    expectFile: true,
-                });
-                const { buffer, headers = {}, statusCode = 200, finalUrl = media.url } = result;
-                if (!buffer || !buffer.length || looksLikeHtml(buffer, headers)) {
-                    throw new Error(`ลิงก์ ${media.mediaType} ไม่ได้ตอบกลับเป็นไฟล์จริง`);
+                // ข้ามไฟล์ซ้ำโดยไม่ดาวน์โหลดเลย — ตรวจ index ก่อนดาวน์โหลด (URL + SHA-256 ถาวรต่อเว็บไซต์)
+                let reuseRecord = fileStore ? fileStore.find(media.url) : null;
+
+                let result = null;
+                let mediaDigest = null;
+                if (!reuseRecord) {
+                    const doDownload = () =>
+                        downloadBinary(media.url, logger, 5, {
+                            referer: effectiveActivityUrl,
+                            listingReferer: source.listingUrl,
+                            shouldStop,
+                            expectFile: true,
+                        });
+                    result = fileStore
+                        ? await fileStore.claimDownload(media.url, doDownload)
+                        : await doDownload();
+                    const { buffer, headers = {}, statusCode = 200, finalUrl = media.url } = result;
+                    if (!buffer || !buffer.length || looksLikeHtml(buffer, headers)) {
+                        throw new Error(`ลิงก์ ${media.mediaType} ไม่ได้ตอบกลับเป็นไฟล์จริง`);
+                    }
+                    mediaDigest = crypto.createHash("sha256").update(buffer).digest("hex");
+                    if (fileStore) {
+                        reuseRecord =
+                            fileStore.find(media.url, finalUrl || media.url) ||
+                            fileStore.findByDigest(mediaDigest);
+                    }
                 }
-                let mediaName = ensureFileNameExtension(
-                    safeName(mediaFileName(finalUrl || media.url, `${media.mediaType}-${additionalMediaIndex}`)),
-                    headers,
-                    buffer,
-                );
-                const mediaDir = path.join(
-                    folderPath,
-                    media.mediaType === "video"
-                        ? "videos"
-                        : media.mediaType === "audio"
-                          ? "audio"
-                          : "documents",
-                );
-                ensureDir(mediaDir);
-                const localPath = uniqueFilePath(mediaDir, mediaName);
-                fs.writeFileSync(localPath, buffer);
-                mediaName = path.basename(localPath);
-                const mediaMimeType = detectedContentType(buffer, headers);
-                const pdfStorage = pdfStorageForMediaBuffer(buffer, mediaMimeType, mediaName, logger);
-                const downloadSource = headers["x-scraper-source"] || headers["X-Scraper-Source"] || "direct";
+                const mediaMimeType = reuseRecord
+                    ? reuseRecord.mimeType
+                    : detectedContentType(result.buffer, result.headers || {});
+                const finalUrl =
+                    (result && result.finalUrl) ||
+                    (reuseRecord && reuseRecord.finalUrl) ||
+                    media.url;
+                let mediaName;
+                let localPath;
+                let saveStatus = "downloaded";
+                let savedAt;
+                if (reuseRecord) {
+                    localPath = reuseRecord.localPath;
+                    saveStatus = "already_exists";
+                    savedAt = reuseRecord.addedAt;
+                    mediaName = path.basename(localPath);
+                    // จด URL ใหม่ชี้ไปไฟล์เดิม เพื่อให้รอบถัดไปข้ามได้โดยไม่ต้องดาวน์โหลด
+                    if (fileStore) {
+                        fileStore.register({
+                            url: media.url,
+                            finalUrl,
+                            localPath,
+                            sha256: mediaDigest || reuseRecord.sha256,
+                            fileSize: reuseRecord.fileSize,
+                            mimeType: mediaMimeType,
+                            addedAt: reuseRecord.addedAt,
+                        });
+                    }
+                } else {
+                    const { buffer, headers = {} } = result;
+                    mediaName = ensureFileNameExtension(
+                        safeName(mediaFileName(finalUrl, `${media.mediaType}-${additionalMediaIndex}`)),
+                        headers,
+                        buffer,
+                    );
+                    const mediaDir = path.join(
+                        folderPath,
+                        media.mediaType === "video"
+                            ? "videos"
+                            : media.mediaType === "audio"
+                              ? "audio"
+                              : "documents",
+                    );
+                    ensureDir(mediaDir);
+                    localPath = uniqueFilePath(mediaDir, mediaName);
+                    fs.writeFileSync(localPath, buffer);
+                    mediaName = path.basename(localPath);
+                    savedAt = nowSql();
+                    if (fileStore) {
+                        fileStore.register({
+                            url: media.url,
+                            finalUrl,
+                            localPath,
+                            sha256: mediaDigest,
+                            fileSize: buffer.length,
+                            mimeType: mediaMimeType,
+                        });
+                    }
+                }
+                const mediaFileSize = reuseRecord ? reuseRecord.fileSize : result.buffer.length;
+                const pdfStorage =
+                    reuseRecord && !result
+                        ? { fileSha256: reuseRecord.sha256 || null, pdfData: null, pdfStoredInDb: false }
+                        : pdfStorageForMediaBuffer(result.buffer, mediaMimeType, mediaName, logger);
+                const downloadSource = result
+                    ? result.headers["x-scraper-source"] || result.headers["X-Scraper-Source"] || "direct"
+                    : "direct";
                 mediaRows.push({
                     albumId: source.albumId,
                     activityUrl: effectiveActivityUrl,
@@ -1085,36 +1210,42 @@ async function scrapeActivityPictures({
                     mediaUrl: media.url,
                     embedUrl: null,
                     localPath,
-                    fileSize: buffer.length,
+                    fileSize: mediaFileSize,
                     mediaMimeType,
-                    fileSha256: pdfStorage.fileSha256,
+                    fileSha256: mediaDigest || (reuseRecord ? reuseRecord.sha256 : null),
                     pdfData: pdfStorage.pdfData,
                     pdfStoredInDb: pdfStorage.pdfStoredInDb,
                     downloadSource,
                     isDownloaded: true,
-                    downloadedAt: nowSql(),
+                    downloadedAt: savedAt,
                 });
                 emitAudit({
                     ...auditBase,
-                    status: "downloaded",
-                    httpStatus: statusCode,
+                    status: saveStatus,
+                    httpStatus: result ? result.statusCode : null,
                     downloadable: true,
-                    downloaded: true,
+                    downloaded: saveStatus === "downloaded",
                     fileName: mediaName,
-                    fileSize: buffer.length,
+                    fileSize: mediaFileSize,
                     contentType: mediaMimeType,
                     localPath,
                     finalUrl,
+                    duplicateOfUrl: reuseRecord ? reuseRecord.url : null,
+                    errorMessage: reuseRecord
+                        ? `ข้ามไฟล์ซ้ำ: เคยดาวน์โหลด ${reuseRecord.url} ไว้แล้ว`
+                        : null,
                 });
                 logger(
-                    `บันทึก${
-                        media.mediaType === "video"
-                            ? "วิดีโอ"
-                            : media.mediaType === "audio"
-                              ? "เสียง"
-                              : "เอกสาร"
-                    }: ${mediaName}` +
-                        (pdfStorage.pdfStoredInDb ? " และเตรียมเก็บ PDF ลงฐานข้อมูล" : ""),
+                    reuseRecord
+                        ? `ข้ามไฟล์ซ้ำ (ใช้ไฟล์เดิม): ${mediaName} — ${reuseRecord.url}`
+                        : `บันทึก${
+                              media.mediaType === "video"
+                                  ? "วิดีโอ"
+                                  : media.mediaType === "audio"
+                                    ? "เสียง"
+                                    : "เอกสาร"
+                          }: ${mediaName}` +
+                              (pdfStorage.pdfStoredInDb ? " และเตรียมเก็บ PDF ลงฐานข้อมูล" : ""),
                 );
             } catch (error) {
                 rethrowIfStopped(error);

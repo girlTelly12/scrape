@@ -252,6 +252,7 @@ async function scrapeWholePublicSite(options) {
         shouldStop,
         onAuditRecord,
         runId = null,
+        fileStore = null,
     } = options;
     if (!startUrl) throw new Error("โหมดสำรวจทั้งเว็บไซต์ต้องมีเว็บไซต์หลัก");
 
@@ -369,65 +370,139 @@ async function scrapeWholePublicSite(options) {
 
         assetSeen.add(assetUrl);
         const startedAt = new Date();
+        // ข้ามดาวน์โหลดลิงก์ที่เคยดาวน์โหลดแล้ว (index ถาวรต่อเว็บไซต์) — ไม่เสีย bandwidth
+        const preExisting = fileStore ? fileStore.find(assetUrl) : null;
         try {
-            const result = await downloadBinary(assetUrl, logger, 5, {
-                shouldStop,
-                expectFile: true,
-                referer: pageMeta.finalUrl,
-                listingReferer: rootUrl,
-            });
-            if (!result.buffer || result.buffer.length === 0) throw new Error("ไฟล์ว่าง");
-            if (result.buffer.length > maxFileMb * 1024 * 1024) {
-                throw new Error(`ไฟล์ใหญ่เกินกำหนด ${maxFileMb} MB`);
-            }
-            if (looksLikeHtml(result.buffer, result.headers || {})) {
-                throw new Error("URL ไฟล์ตอบกลับเป็น HTML ไม่ใช่ไฟล์จริง");
-            }
-
-            const mimeType = detectedContentType(result.buffer, result.headers || {}) || contentType(result.headers || {});
-            const category = classifyAsset(result.finalUrl || assetUrl, mimeType || candidate.mimeType);
-            const targetDir = path.join(assetsDir, category);
-            ensureDir(targetDir);
-            let fileName = fileNameFromHeadersOrUrl(result.headers || {}, result.finalUrl || assetUrl);
-            fileName = ensureFileNameExtension(safeName(fileName).slice(0, 180), result.headers || {}, result.buffer);
-            const digest = sha256(result.buffer);
+            let result = null;
+            let digest = null;
+            let mimeType = "";
+            let category = "";
+            let fileName = "";
             let localPath;
             let status = "downloaded";
             let duplicateOfUrl = null;
-            if (contentHashes.has(digest)) {
-                localPath = contentHashes.get(digest).localPath;
+            let finalUrl = assetUrl;
+            let httpStatus = 200;
+            let fileSize = null;
+
+            if (preExisting) {
+                localPath = preExisting.localPath;
                 status = "already_exists";
-                duplicateOfUrl = contentHashes.get(digest).url;
+                duplicateOfUrl = preExisting.url || assetUrl;
+                fileName = path.basename(localPath);
+                mimeType = preExisting.mimeType || "";
+                category = classifyAsset(localPath, mimeType || candidate.mimeType);
+                digest = preExisting.sha256 || null;
+                fileSize =
+                    preExisting.fileSize != null
+                        ? preExisting.fileSize
+                        : fs.statSync(localPath).size;
+                if (fileStore) {
+                    fileStore.register({
+                        url: assetUrl,
+                        finalUrl,
+                        localPath,
+                        sha256: digest,
+                        fileSize,
+                        mimeType,
+                        addedAt: preExisting.addedAt,
+                    });
+                }
             } else {
-                localPath = uniqueFilePath(targetDir, `${digest.slice(0, 10)}_${fileName}`);
-                fs.writeFileSync(localPath, result.buffer);
-                contentHashes.set(digest, { localPath, url: assetUrl });
+                result = await downloadBinary(assetUrl, logger, 5, {
+                    shouldStop,
+                    expectFile: true,
+                    referer: pageMeta.finalUrl,
+                    listingReferer: rootUrl,
+                });
+                if (!result.buffer || result.buffer.length === 0) throw new Error("ไฟล์ว่าง");
+                if (result.buffer.length > maxFileMb * 1024 * 1024) {
+                    throw new Error(`ไฟล์ใหญ่เกินกำหนด ${maxFileMb} MB`);
+                }
+                if (looksLikeHtml(result.buffer, result.headers || {})) {
+                    throw new Error("URL ไฟล์ตอบกลับเป็น HTML ไม่ใช่ไฟล์จริง");
+                }
+
+                mimeType = detectedContentType(result.buffer, result.headers || {}) || contentType(result.headers || {});
+                category = classifyAsset(result.finalUrl || assetUrl, mimeType || candidate.mimeType);
+                const targetDir = path.join(assetsDir, category);
+                ensureDir(targetDir);
+                fileName = fileNameFromHeadersOrUrl(result.headers || {}, result.finalUrl || assetUrl);
+                fileName = ensureFileNameExtension(safeName(fileName).slice(0, 180), result.headers || {}, result.buffer);
+                digest = sha256(result.buffer);
+                finalUrl = result.finalUrl || assetUrl;
+                httpStatus = result.statusCode || 200;
+                fileSize = result.buffer.length;
+
+                // ข้ามไฟล์ที่เคยบันทึกเนื้อหาเดียวกันไว้แล้ว (ในรอบนี้หรือจาก index ถาวร)
+                const existing =
+                    contentHashes.get(digest) ||
+                    (fileStore ? fileStore.findByDigest(digest) : null) ||
+                    null;
+                if (existing) {
+                    localPath = existing.localPath;
+                    status = "already_exists";
+                    duplicateOfUrl = existing.url || assetUrl;
+                    if (fileStore) {
+                        fileStore.register({
+                            url: assetUrl,
+                            finalUrl,
+                            localPath,
+                            sha256: digest,
+                            fileSize,
+                            mimeType,
+                            addedAt: existing.addedAt || null,
+                        });
+                    }
+                } else {
+                    localPath = uniqueFilePath(targetDir, `${digest.slice(0, 10)}_${fileName}`);
+                    fs.writeFileSync(localPath, result.buffer);
+                    contentHashes.set(digest, { localPath, url: assetUrl });
+                    if (fileStore) {
+                        fileStore.register({
+                            url: assetUrl,
+                            finalUrl,
+                            localPath,
+                            sha256: digest,
+                            fileSize,
+                            mimeType,
+                        });
+                    }
+                }
             }
 
-            const isPdf = (detectFileSignature(result.buffer)?.kind === "pdf") || /application\/pdf/i.test(mimeType || "") || /\.pdf$/i.test(fileName);
+            const isPdf =
+                (result && detectFileSignature(result.buffer)?.kind === "pdf") ||
+                /application\/pdf/i.test(mimeType || "") ||
+                /\.pdf$/i.test(fileName);
             const storePdf = boolValue(process.env.STORE_PDF_IN_DB, true);
             const pdfMaxMb = clampNumber(process.env.PDF_DB_MAX_MB, 32, 1, 1024);
-            const pdfData = isPdf && storePdf && result.buffer.length <= pdfMaxMb * 1024 * 1024
-                ? result.buffer
-                : null;
+            let pdfData = null;
+            if (isPdf && storePdf && fileSize <= pdfMaxMb * 1024 * 1024) {
+                // รอบที่ข้ามดาวน์โหลด (preExisting) ไม่มี buffer ในหน่วยความจำ -> อ่านจากไฟล์เดิม
+                pdfData = result ? result.buffer : fs.readFileSync(localPath);
+            }
 
             const row = {
                 runId,
                 pageUrl: pageMeta.finalUrl,
                 assetUrl,
-                finalUrl: result.finalUrl || assetUrl,
+                finalUrl,
                 assetType: category,
                 fileName,
                 localPath,
                 mimeType,
-                fileSize: result.buffer.length,
+                fileSize,
                 fileSha256: digest,
                 status,
-                httpStatus: result.statusCode || 200,
+                httpStatus,
                 discoveredVia: candidate.via || "page",
                 pdfData,
                 pdfStoredInDb: Boolean(pdfData),
-                downloadedAt: startedAt.toISOString().slice(0, 19).replace("T", " "),
+                downloadedAt:
+                    preExisting && preExisting.addedAt
+                        ? preExisting.addedAt
+                        : startedAt.toISOString().slice(0, 19).replace("T", " "),
             };
             assetRows.push(row);
             onAuditRecord?.({
@@ -440,19 +515,19 @@ async function scrapeWholePublicSite(options) {
                 fileType: category,
                 discoveredVia: candidate.via,
                 status,
-                httpStatus: result.statusCode || 200,
+                httpStatus,
                 downloadable: true,
                 downloaded: status === "downloaded",
                 localPath,
-                fileSize: result.buffer.length,
+                fileSize,
                 contentType: mimeType,
-                finalUrl: result.finalUrl || assetUrl,
+                finalUrl,
                 duplicateOfUrl,
             });
 
-            if (category === "styles") {
+            if (category === "styles" && result && result.buffer) {
                 const cssText = result.buffer.toString("utf8");
-                for (const nested of extractCssUrls(cssText, result.finalUrl || assetUrl)) {
+                for (const nested of extractCssUrls(cssText, finalUrl)) {
                     await downloadAsset(nested, pageMeta);
                     if (assetRows.length >= maxAssets) break;
                 }

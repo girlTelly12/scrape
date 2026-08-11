@@ -26,6 +26,7 @@ const { scrapeWholePublicSite } = require("./scrapers/site-migration");
 const { AONANG_DATABASE_NAME, AONANG_NEWS_SECTIONS } = require("./scrapers/aonang");
 const { sleepWithStop } = require("./common");
 const { getDatabaseMode, prepareDatabase } = require("./db-availability");
+const { createFileStore } = require("./file-store");
 const fs = require("fs");
 const path = require("path");
 const {
@@ -237,6 +238,18 @@ class JobRunner {
             if (shouldStop()) throw new Error(STOP_ERROR);
         };
 
+        // index ข้ามไฟล์ซ้ำต่อเว็บไซต์ (URL + SHA-256) ใช้ร่วมกันทุก section
+        const fileStore = createFileStore({
+            indexPath: path.join(baseOutputDir, "file-index.json"),
+            logger,
+        });
+        this.log(
+            `ข้ามไฟล์ซ้ำ: ${fileStore.skipExisting ? "เปิด" : "ปิด"} (SKIP_EXISTING_FILES)` +
+                (fileStore.forceRefresh
+                    ? " — FORCE_REFRESH=true: ดาวน์โหลดใหม่ทุกไฟล์ แต่ยังข้ามไฟล์เนื้อหาซ้ำด้วย SHA-256"
+                    : ""),
+        );
+
         let effectiveConfig = { ...config };
         let vendorAdapter = getVendorAdapter("generic");
 
@@ -434,6 +447,7 @@ class JobRunner {
                             outDir,
                             logger,
                             shouldStop,
+                            fileStore,
                             onAuditRecord: auditCallback(
                                 `otherCustom_${index + 1}_${topic.tableName}`,
                                 `อื่นๆ (${topic.tableName})`,
@@ -479,6 +493,7 @@ class JobRunner {
                               delayMs: effectiveConfig.migrationDelayMs,
                               includeExternalAssets: effectiveConfig.includeExternalAssets,
                               resume: effectiveConfig.resumeMigration,
+                              fileStore,
                               onAuditRecord: auditCallback(
                                   "fullSiteMigration",
                                   "ย้ายข้อมูลทั้งเว็บไซต์",
@@ -518,6 +533,7 @@ class JobRunner {
                                   outDir: path.join(baseOutputDir, s.outSubdir),
                                   logger,
                                   shouldStop,
+                                  fileStore,
                                   onAuditRecord: auditCallback(s.key, s.label, s.tableName || null),
                               }),
                           save: (data) => AONANG_INSERT_BY_KEY[s.key](this.databaseName, data.rows),
@@ -550,6 +566,7 @@ class JobRunner {
                                   outDir: path.join(baseOutputDir, "procurement_files"),
                                   logger,
                                   shouldStop,
+                                  fileStore,
                                   onAuditRecord: auditCallback("procurement", "จัดซื้อจัดจ้าง", "procurement_files"),
                               }),
                           save: (data) => insertProcurementRows(this.databaseName, data.rows),
@@ -578,6 +595,7 @@ class JobRunner {
                                   outDir: path.join(baseOutputDir, "public_relations_files"),
                                   logger,
                                   shouldStop,
+                                  fileStore,
                                   onAuditRecord: auditCallback(
                                       "publicRelations",
                                       "ประชาสัมพันธ์",
@@ -608,6 +626,7 @@ class JobRunner {
                                   outDir: path.join(baseOutputDir, "activity_pictures_file"),
                                   logger,
                                   shouldStop,
+                                  fileStore,
                                   onAuditRecord: auditCallback("activity", "ภาพกิจกรรม", "activity_pictures_file"),
                               }),
                           save: async (data) => {
@@ -698,6 +717,8 @@ class JobRunner {
                 }
                 sectionResults[section.key] = section.summarize(data);
                 this.log(section.logDone(data));
+                // บันทึก index ไฟล์ซ้ำเป็นระยะ (กันข้อมูลหายถ้างานถูกหยุดกลางคัน)
+                fileStore.save();
 
                 const hasNext = i < sections.length - 1;
                 if (hasNext) {
@@ -760,6 +781,8 @@ class JobRunner {
             this.log(`เกิดข้อผิดพลาด: ${error.message}`);
             throw error;
         } finally {
+            // บันทึก index ไฟล์ซ้ำครั้งสุดท้าย (ทั้งกรณีจบปกติ/หยุด/ล้ม)
+            fileStore.save();
             if (this.databaseEnabled && this.fileAuditRows.length) {
                 try {
                     await insertFileAuditRows(this.databaseName, this.fileAuditRows);

@@ -424,6 +424,7 @@ async function scrapeNewsCategory({
     shouldStop = () => false,
     onAuditRecord = () => {},
     adapterProfile = {},
+    fileStore = null,
     sectionKey = adapterProfile.sectionKey || "news",
     sectionLabel = "",
     delayMsPerDownload = 150,
@@ -731,71 +732,132 @@ ${html}`;
                 }
 
                 try {
-                    const result = await downloadBinary(candidate.url, logger, 5, {
-                        referer: detailUrl,
-                        shouldStop,
-                        expectFile: true,
-                    });
-                    const { buffer, headers = {}, statusCode = 200, finalUrl = candidate.url } = result;
+                    // ข้ามไฟล์ซ้ำโดยไม่ดาวน์โหลดเลย — ตรวจ index ก่อนดาวน์โหลด (URL + SHA-256 ถาวรต่อเว็บไซต์)
+                    let reuseRecord = fileStore ? fileStore.find(candidate.url) : null;
 
-                    const detectedSignature = detectFileSignature(buffer);
-                    const declaredType = contentType(headers);
-                    if (
-                        detectedSignature &&
-                        (declaredType === "text/html" || declaredType === "application/xhtml+xml")
-                    ) {
-                        logger(
-                            `ตรวจพบไฟล์จริงจากลายเซ็น ${detectedSignature.mimeType} ` +
-                                `แม้เซิร์ฟเวอร์แจ้ง ${declaredType}: ${candidate.url}`,
-                        );
+                    // ยังไม่เคยเห็น URL นี้ใน index -> ดาวน์โหลด
+                    // claimDownload กันการดาวน์โหลดซ้ำเมื่อทำงานขนาน (SCRAPE_CONCURRENCY>1)
+                    let result = null;
+                    let fileDigest = null;
+                    if (!reuseRecord) {
+                        const doDownload = () =>
+                            downloadBinary(candidate.url, logger, 5, {
+                                referer: detailUrl,
+                                shouldStop,
+                                expectFile: true,
+                            });
+                        result = fileStore
+                            ? await fileStore.claimDownload(candidate.normalizedUrl, doDownload)
+                            : await doDownload();
+                        const { buffer, headers = {}, statusCode = 200, finalUrl = candidate.url } = result;
+
+                        const detectedSignature = detectFileSignature(buffer);
+                        const declaredType = contentType(headers);
+                        if (
+                            detectedSignature &&
+                            (declaredType === "text/html" || declaredType === "application/xhtml+xml")
+                        ) {
+                            logger(
+                                `ตรวจพบไฟล์จริงจากลายเซ็น ${detectedSignature.mimeType} ` +
+                                    `แม้เซิร์ฟเวอร์แจ้ง ${declaredType}: ${candidate.url}`,
+                            );
+                        }
+
+                        if (!buffer || buffer.length === 0) {
+                            emitAudit({
+                                ...auditBase,
+                                status: "empty_file",
+                                httpStatus: statusCode,
+                                downloadable: false,
+                                downloaded: false,
+                                contentType: detectedContentType(buffer, headers),
+                                finalUrl,
+                                errorMessage: "เซิร์ฟเวอร์ส่งไฟล์ขนาด 0 ไบต์",
+                            });
+                            logger(`ไฟล์ว่าง 0 ไบต์: ${candidate.url}`);
+                            continue;
+                        }
+
+                        if (looksLikeHtml(buffer, headers)) {
+                            emitAudit({
+                                ...auditBase,
+                                status: "invalid_content",
+                                httpStatus: statusCode,
+                                downloadable: false,
+                                downloaded: false,
+                                fileSize: buffer.length,
+                                contentType: detectedContentType(buffer, headers),
+                                finalUrl,
+                                errorMessage: "ลิงก์ตอบกลับเป็นหน้า HTML ไม่ใช่ไฟล์เอกสาร/รูปภาพ",
+                            });
+                            logger(`ข้ามลิงก์ที่ตอบกลับเป็น HTML: ${candidate.url}`);
+                            continue;
+                        }
+
+                        // ตรวจซ้ำหลังดาวน์โหลด: URL จริงหลัง redirect + เนื้อหาเดียวกัน (SHA-256)
+                        fileDigest = crypto.createHash("sha256").update(buffer).digest("hex");
+                        if (fileStore) {
+                            reuseRecord =
+                                fileStore.find(candidate.url, finalUrl || candidate.url) ||
+                                fileStore.findByDigest(fileDigest);
+                        }
                     }
 
-                    if (!buffer || buffer.length === 0) {
-                        emitAudit({
-                            ...auditBase,
-                            status: "empty_file",
-                            httpStatus: statusCode,
-                            downloadable: false,
-                            downloaded: false,
-                            contentType: detectedContentType(buffer, headers),
-                            finalUrl,
-                            errorMessage: "เซิร์ฟเวอร์ส่งไฟล์ขนาด 0 ไบต์",
-                        });
-                        logger(`ไฟล์ว่าง 0 ไบต์: ${candidate.url}`);
-                        continue;
+                    let localPath;
+                    let saveStatus = "downloaded";
+                    const finalUrl =
+                        (result && result.finalUrl) ||
+                        (reuseRecord && reuseRecord.finalUrl) ||
+                        candidate.url;
+                    if (reuseRecord) {
+                        localPath = reuseRecord.localPath;
+                        saveStatus = "already_exists";
+                        // จด URL ใหม่ชี้ไปไฟล์เดิม เพื่อให้รอบถัดไปข้ามได้โดยไม่ต้องดาวน์โหลด
+                        if (fileStore) {
+                            fileStore.register({
+                                url: candidate.url,
+                                finalUrl,
+                                localPath,
+                                sha256: fileDigest || reuseRecord.sha256,
+                                fileSize: reuseRecord.fileSize,
+                                mimeType: reuseRecord.mimeType,
+                                addedAt: reuseRecord.addedAt,
+                            });
+                        }
+                    } else {
+                        const { buffer, headers = {} } = result;
+                        let fileName = fileNameFromHeadersOrUrl(headers, finalUrl);
+                        fileName = ensureFileNameExtension(fileName, headers, buffer);
+                        localPath = uniqueFilePath(folderPath, fileName);
+                        fs.writeFileSync(localPath, buffer);
+                        if (fileStore) {
+                            fileStore.register({
+                                url: candidate.url,
+                                finalUrl,
+                                localPath,
+                                sha256: fileDigest,
+                                fileSize: buffer.length,
+                                mimeType: detectedContentType(buffer, headers),
+                            });
+                        }
                     }
-
-                    if (looksLikeHtml(buffer, headers)) {
-                        emitAudit({
-                            ...auditBase,
-                            status: "invalid_content",
-                            httpStatus: statusCode,
-                            downloadable: false,
-                            downloaded: false,
-                            fileSize: buffer.length,
-                            contentType: detectedContentType(buffer, headers),
-                            finalUrl,
-                            errorMessage: "ลิงก์ตอบกลับเป็นหน้า HTML ไม่ใช่ไฟล์เอกสาร/รูปภาพ",
-                        });
-                        logger(`ข้ามลิงก์ที่ตอบกลับเป็น HTML: ${candidate.url}`);
-                        continue;
-                    }
-
-                    let fileName = fileNameFromHeadersOrUrl(headers, finalUrl || candidate.url);
-                    fileName = ensureFileNameExtension(fileName, headers, buffer);
-                    const localPath = uniqueFilePath(folderPath, fileName);
-                    fs.writeFileSync(localPath, buffer);
                     counters.fileCount += 1;
                     savedFiles += 1;
                     const actualFileName = path.basename(localPath);
-                    const actualFileType = fileTypeFromResponse(candidate, headers, buffer);
-                    const actualMimeType = detectedContentType(buffer, headers);
-                    const pdfStorage = pdfStorageForBuffer(
-                        buffer,
-                        actualMimeType,
-                        actualFileName,
-                        logger,
-                    );
+                    const actualFileType = reuseRecord
+                        ? fileTypeFromResponse(candidate, {}, null)
+                        : fileTypeFromResponse(candidate, result.headers || {}, result.buffer);
+                    const actualMimeType = reuseRecord
+                        ? reuseRecord.mimeType
+                        : detectedContentType(result.buffer, result.headers || {});
+                    const savedFileSize = reuseRecord ? reuseRecord.fileSize : result.buffer.length;
+                    const savedAt = reuseRecord
+                        ? reuseRecord.addedAt
+                        : new Date().toISOString().slice(0, 19).replace("T", " ");
+                    const pdfStorage =
+                        reuseRecord && !result
+                            ? { fileSha256: reuseRecord.sha256 || null, pdfData: null, pdfStoredInDb: false }
+                            : pdfStorageForBuffer(result.buffer, actualMimeType, actualFileName, logger);
 
                     localRows.push({
                         sectionKey: effectiveSectionKey,
@@ -822,29 +884,35 @@ ${html}`;
                         fileName: actualFileName,
                         fileUrl: candidate.url,
                         localPath,
-                        fileSize: buffer.length,
+                        fileSize: savedFileSize,
                         fileMimeType: actualMimeType,
-                        fileSha256: pdfStorage.fileSha256,
+                        fileSha256: fileDigest || pdfStorage.fileSha256,
                         pdfData: pdfStorage.pdfData,
                         pdfStoredInDb: pdfStorage.pdfStoredInDb,
-                        downloadedAt: new Date().toISOString().slice(0, 19).replace("T", " "),
+                        downloadedAt: savedAt,
                     });
                     emitAudit({
                         ...auditBase,
-                        status: "downloaded",
-                        httpStatus: statusCode,
+                        status: saveStatus,
+                        httpStatus: result ? result.statusCode : null,
                         downloadable: true,
-                        downloaded: true,
+                        downloaded: saveStatus === "downloaded",
                         fileName: actualFileName,
                         fileType: actualFileType,
-                        fileSize: buffer.length,
-                        contentType: detectedContentType(buffer, headers),
+                        fileSize: savedFileSize,
+                        contentType: actualMimeType,
                         localPath,
                         finalUrl,
+                        duplicateOfUrl: duplicateOfUrl || (reuseRecord ? reuseRecord.url : null),
+                        errorMessage: reuseRecord
+                            ? `ข้ามไฟล์ซ้ำ: เคยดาวน์โหลด ${reuseRecord.url} ไว้แล้ว`
+                            : null,
                     });
                     logger(
-                        `บันทึกไฟล์: ${actualFileName}` +
-                            (pdfStorage.pdfStoredInDb ? " และเก็บ PDF ลงฐานข้อมูลแล้ว" : ""),
+                        reuseRecord
+                            ? `ข้ามไฟล์ซ้ำ (ใช้ไฟล์เดิม): ${actualFileName} — ${reuseRecord.url}`
+                            : `บันทึกไฟล์: ${actualFileName}` +
+                                  (pdfStorage.pdfStoredInDb ? " และเก็บ PDF ลงฐานข้อมูลแล้ว" : ""),
                     );
                     await sleepWithStop(delayMsPerDownload, shouldStop);
                 } catch (error) {
