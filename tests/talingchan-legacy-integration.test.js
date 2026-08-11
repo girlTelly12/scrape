@@ -5,6 +5,11 @@ const os = require("os");
 const path = require("path");
 const { scrapeNewsCategory } = require("../src/scrapers/news-scraper");
 
+// test นี้ตั้งใจให้รันกับ HTTP server ท้องถิ่นเท่านั้น ต้องบังคับโหมด HTTP
+// ไม่งั้นถ้าเครื่องตั้ง BROWSER_MODE=cdp ไว้ ทุกการดาวน์โหลดจะเปิด CDP connection
+// ไป Chrome:9222 แล้วไม่มีการปิด ทำให้ process ค้างหลัง assert ผ่านหมดแล้ว
+process.env.BROWSER_MODE = "http";
+
 async function main() {
     const pdf = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n");
     const server = http.createServer((req, res) => {
@@ -69,7 +74,13 @@ async function main() {
         assert.strictEqual(result.rows[0].fileMimeType, "application/pdf");
         assert.strictEqual(result.rows[0].pdfStoredInDb, true);
     } finally {
-        server.close();
+        // HTTP client ส่ง Connection: keep-alive ทำให้ server.close() รอ socket ค้างไม่มีวันจบ
+        // ต้องตัด connection ทิ้งก่อน เช่นเดียวกับ activity-parser-integration.test.js
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+        // global agent เก็บ keep-alive socket ไว้ใน pool โดยไม่มี idle timeout
+        // ต้อง destroy ทิ้ง ไม่งั้น process ไม่ยอม exit หลัง assert ผ่านหมดแล้ว
+        http.globalAgent.destroy();
         fs.rmSync(outDir, { recursive: true, force: true });
     }
     console.log("talingchan legacy integration tests passed");
