@@ -1323,10 +1323,13 @@ function isHttpUrl(value) {
     }
 }
 
+// แยก regex ไว้ใช้ร่วมกันระหว่าง renderedImageNoise และ fallback เปิดหน้า HTML
+// (ส่ง pattern เข้า evaluate ของฟังก์ชันนั้นเพื่อไม่ให้เขียนซ้ำ)
+const RENDERED_IMAGE_NOISE_RE =
+    /(?:favicon|logo|icon|avatar|spinner|loading|placeholder|captcha|social|facebook|youtube|line[-_]?icon|(?:^|[\/])(?:bg[0-9_-]*|head[0-9_-]*|header[0-9_-]*|foot[0-9_-]*|footer[0-9_-]*|bt[0-9_-]*|btn[0-9_-]*|blank|close(?:label)?|name|tem(?:plate)?|vv[0-9_-]*|spacer|pixel)(?:\.(?:gif|png|jpe?g|webp|bmp))?(?:$|[?#]))/i;
+
 function renderedImageNoise(value) {
-    return /(?:favicon|logo|icon|avatar|spinner|loading|placeholder|captcha|social|facebook|youtube|line[-_]?icon|(?:^|[\/])(?:bg[0-9_-]*|head[0-9_-]*|header[0-9_-]*|foot[0-9_-]*|footer[0-9_-]*|bt[0-9_-]*|btn[0-9_-]*|blank|close(?:label)?|name|tem(?:plate)?|vv[0-9_-]*|spacer|pixel)(?:\.(?:gif|png|jpe?g|webp|bmp))?(?:$|[?#]))/i.test(
-        String(value || ""),
-    );
+    return RENDERED_IMAGE_NOISE_RE.test(String(value || ""));
 }
 
 function isExcludedActivityUiImage(value) {
@@ -1570,6 +1573,112 @@ async function captureRenderedImagesFromPage(pageUrl, logger, requestOptions = {
 }
 
 
+/**
+ * Fallback สำหรับ URL ที่คาดว่าเป็นไฟล์/รูป แต่เซิร์ฟเวอร์ตอบกลับเป็นหน้า HTML
+ * (เช่น หน้า /gallery/detail/xxx, viewer, lightbox wrapper)
+ *
+ * ใช้หน้า Chrome ที่เปิด URL ไว้แล้ว (หรือเปิดใหม่) หารูปจริงในหน้าโดยเรียงลำดับ:
+ *   1. og:image / link[rel="image_src"]
+ *   2. <a href> ที่ชี้ไปไฟล์รูปเต็ม (ข้าม thumbnail/resize) — มักเป็นรูปใหญ่ของ lightbox
+ *   3. <img> ที่ใหญ่ที่สุดในเนื้อหา
+ * แล้วดาวน์โหลดรูปนั้นแทน หากไม่พบรูปใดคืน null ให้ผู้เรียกจัดการตามเดิม
+ */
+async function extractImageFromHtmlPage(page, assetUrl, logger, requestOptions = {}) {
+    assertNotStopped(requestOptions.shouldStop);
+
+    // ใช้ fallback นี้เฉพาะลิงก์ที่คาดว่าเป็นรูป/หน้าแสดงภาพ ไม่ใช่เอกสาร
+    // (PDF/doc ที่ตอบ HTML ควรจบเป็น invalid_content ให้ผู้ใช้เห็นปัญหา ไม่ใช่กู้รูปจากหน้า error)
+    try {
+        if (/\.(?:pdf|docx?|xlsx?|pptx?|csv|zip|rar|7z)(?:[?#]|$)/i.test(new URL(assetUrl).pathname)) {
+            return null;
+        }
+    } catch {
+        return null;
+    }
+
+    // เตรียมให้รูป lazy-load โผล่ใน DOM ก่อนค้นหา
+    await activateLazyAssets(page).catch(() => {});
+    await scrollRefererPage(page, requestOptions.shouldStop).catch(() => {});
+
+    const candidate = await page
+        .evaluate(
+            ({ noiseSource }) => {
+                const noise = new RegExp(noiseSource, "i");
+                const absolute = (value) => {
+                    try {
+                        return value ? new URL(value, document.baseURI).toString() : "";
+                    } catch {
+                        return "";
+                    }
+                };
+                const isImageUrl = (value) => /\.(?:jpe?g|png|gif|webp|bmp)(?:[?#]|$)/i.test(String(value || ""));
+                const isThumbOrResize = (value) =>
+                    /(?:thumb|thumbnail|resize|\/image\/ratio\/|width=\d+&|height=\d+&|small|icon)/i.test(
+                        String(value || ""),
+                    );
+
+                // 1. og:image / image_src — เว็บราชการส่วนใหญ่ระบุรูปหลักไว้ที่นี่
+                for (const node of document.querySelectorAll(
+                    'meta[property="og:image"], meta[property="og:image:url"], meta[name="og:image"], meta[itemprop="image"], link[rel="image_src"]',
+                )) {
+                    const url = absolute(node.getAttribute("content") || node.getAttribute("href") || "");
+                    if (isImageUrl(url) && !noise.test(url)) return url;
+                }
+
+                // 2. <a href> ที่ชี้ไปไฟล์รูปเต็ม (lightbox มักมี <a href="ไฟล์เต็ม"> ห่อ thumbnail)
+                //    ข้าม URL ที่เป็น thumbnail/resize เพื่อให้ได้ภาพต้นฉบับคุณภาพดี
+                let bestLink = null;
+                for (const anchor of document.querySelectorAll("a[href]")) {
+                    const url = absolute(anchor.getAttribute("href") || "");
+                    if (!isImageUrl(url) || noise.test(url) || isThumbOrResize(url)) continue;
+                    const inner = anchor.querySelector("img");
+                    const width = inner ? inner.naturalWidth || inner.width || 0 : 0;
+                    if (!bestLink || width > bestLink.width) bestLink = { url, width };
+                }
+                if (bestLink) return bestLink.url;
+
+                // 3. <img> ที่ใหญ่ที่สุดในเนื้อหา
+                let best = null;
+                for (const image of document.images) {
+                    const src = absolute(
+                        image.currentSrc || image.src || image.getAttribute("data-src") || image.getAttribute("data-original") || "",
+                    );
+                    if (!isImageUrl(src) || noise.test(src)) continue;
+                    const width = image.naturalWidth || image.width || 0;
+                    const height = image.naturalHeight || image.height || 0;
+                    if (width < 80 || height < 60) continue;
+                    const area = width * height;
+                    if (!best || area > best.area) best = { url: src, area };
+                }
+                if (best) return best.url;
+
+                return "";
+            },
+            { noiseSource: RENDERED_IMAGE_NOISE_RE.source },
+        )
+        .catch(() => "");
+
+    if (!candidate || sameAssetTarget(candidate, assetUrl)) return null;
+
+    // ดาวน์โหลดรูปที่พบในหน้า (อยู่ใน origin เดียวกัน มี Cookie/Referer จริง)
+    let result = await fetchAssetInsidePage(page, candidate, requestOptions).catch(() => null);
+    if (!result || looksLikeHtml(result.buffer, result.headers)) {
+        result = await extractRenderedImageFromAllFrames(page, candidate, requestOptions).catch(() => null);
+    }
+    if (result && !looksLikeHtml(result.buffer, result.headers)) {
+        if (logger) {
+            logger(`URL ตอบกลับเป็นหน้า HTML — ดึงรูปจริงจากภายในหน้าแทน: ${assetUrl} -> ${candidate}`);
+        }
+        result.headers = {
+            ...(result.headers || {}),
+            "x-scraper-source": "html-page-image-fallback",
+            "x-scraper-original-url": assetUrl,
+        };
+        return result;
+    }
+    return null;
+}
+
 async function downloadWithBrowser(url, logger, requestOptions = {}) {
     assertNotStopped(requestOptions.shouldStop);
 
@@ -1733,6 +1842,12 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
         const status = response ? response.status() : 0;
         if (status < 200 || status >= 300) {
             throw createHttpError(status, url);
+        }
+
+        // URL ที่คาดว่าเป็นไฟล์/รูปตอบกลับเป็นหน้า HTML — เปิดหน้าแล้วหารูปจริงแทน
+        if (requestOptions.expectFile) {
+            const htmlFallback = await extractImageFromHtmlPage(page, url, logger, requestOptions);
+            if (htmlFallback) return htmlFallback;
         }
 
         return {
@@ -1914,4 +2029,5 @@ module.exports = {
     captureRenderedPageSnapshot,
     closeBrowserConnection,
     downloadWithBrowser,
+    extractImageFromHtmlPage,
 };
