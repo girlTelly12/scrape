@@ -3,6 +3,25 @@ const path = require("path");
 
 const SUCCESS_STATUSES = new Set(["downloaded", "already_exists"]);
 
+const STATUS_PRIORITY = {
+    downloaded: 100,
+    already_exists: 95,
+    not_found: 70,
+    forbidden: 65,
+    unauthorized: 64,
+    rate_limited: 60,
+    server_error: 55,
+    timeout: 50,
+    network_error: 45,
+    invalid_content: 40,
+    empty_file: 35,
+    failed: 30,
+    referenced_embed: 15,
+    referenced_stream: 14,
+    skipped_external: 10,
+    duplicate: 0,
+};
+
 function nowSql() {
     return new Date().toISOString().slice(0, 19).replace("T", " ");
 }
@@ -221,36 +240,34 @@ function createAuditRecord(values = {}) {
     };
 }
 
-function summarizeFileAudit(records = []) {
+function groupUniqueRecords(records = []) {
     const groups = new Map();
-    const priority = {
-        downloaded: 100,
-        already_exists: 95,
-        not_found: 70,
-        forbidden: 65,
-        unauthorized: 64,
-        rate_limited: 60,
-        server_error: 55,
-        timeout: 50,
-        network_error: 45,
-        invalid_content: 40,
-        empty_file: 35,
-        failed: 30,
-        referenced_embed: 15,
-        referenced_stream: 14,
-        skipped_external: 10,
-        duplicate: 0,
-    };
-
     for (const record of records) {
         const key = record.normalizedFileUrl || normalizeAssetUrl(record.fileUrl) || `row:${groups.size}`;
         const current = groups.get(key);
-        if (!current || (priority[record.status] || 0) > (priority[current.status] || 0)) {
+        if (!current || (STATUS_PRIORITY[record.status] || 0) > (STATUS_PRIORITY[current.status] || 0)) {
             groups.set(key, record);
         }
     }
+    return [...groups.values()];
+}
 
-    const uniqueRecords = [...groups.values()];
+/**
+ * ระบุว่าแต่ละแถวเป็น "ลิงก์ซ้ำ" หรือไม่ โดยใช้ตรรกะเดียวกับ summarizeFileAudit
+ * (แถวที่ URL เดียวกันถูกทิ้งเพราะมีแถวอื่นที่มีสถานะสำคัญกว่า)
+ * เพิ่มฟิลด์ isDuplicateReference ให้แสดงผลในตารางได้ตรงกับตัวเลข summary
+ */
+function flagDuplicateReferences(records = []) {
+    const uniqueRecords = groupUniqueRecords(records);
+    const uniqueSet = new Set(uniqueRecords);
+    return records.map((record) => ({
+        ...record,
+        isDuplicateReference: !uniqueSet.has(record),
+    }));
+}
+
+function summarizeFileAudit(records = []) {
+    const uniqueRecords = groupUniqueRecords(records);
     const byStatus = {};
     for (const record of uniqueRecords) {
         byStatus[record.status] = (byStatus[record.status] || 0) + 1;
@@ -366,6 +383,7 @@ module.exports = {
     detectedContentType,
     ensureFileNameExtension,
     extractHttpStatus,
+    flagDuplicateReferences,
     looksLikeHtml,
     normalizeAssetUrl,
     summarizeFileAudit,

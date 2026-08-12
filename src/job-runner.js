@@ -31,6 +31,7 @@ const fs = require("fs");
 const path = require("path");
 const {
     createAuditRecord,
+    flagDuplicateReferences,
     summarizeFileAudit,
     toCsv,
     writeAuditReports,
@@ -172,8 +173,16 @@ class JobRunner {
         const search = String(options.search || "").trim().toLowerCase();
         const offset = Math.max(0, Number(options.offset) || 0);
         const limit = Math.max(1, Math.min(5000, Number(options.limit) || 500));
-        let rows = this.fileAuditRows;
-        if (status && status !== "all") rows = rows.filter((row) => row.status === status);
+        // ระบุแถวที่เป็นลิงก์ซ้ำไว้ล่วงหน้า ให้ตารางแสดงป้ายตรงกับตัวเลข summary
+        let rows = flagDuplicateReferences(this.fileAuditRows);
+        if (status && status !== "all") {
+            rows = rows.filter((row) => {
+                if (status === "duplicate") return row.isDuplicateReference;
+                // กรองตามสถานะจริงเท่านั้น — แถวซ้ำถูกนับรวมอยู่ใน "ลิงก์ซ้ำ" แล้ว
+                // ไม่ให้ปะปนมากับการกรองสถานะอื่น เพื่อให้ตารางตรงกับการ์ด summary
+                return !row.isDuplicateReference && row.status === status;
+            });
+        }
         if (search) {
             rows = rows.filter((row) =>
                 [row.fileName, row.fileUrl, row.title, row.detailUrl, row.errorMessage]

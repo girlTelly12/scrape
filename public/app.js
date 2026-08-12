@@ -123,6 +123,8 @@
             `error: ${status.lastError || "-"}`,
             `files: ${status.fileAuditSummary?.uniqueFiles || 0}`,
             `downloadable: ${status.fileAuditSummary?.downloadable || 0}`,
+            `failed: ${status.fileAuditSummary?.failed || 0}`,
+            `duplicates: ${status.fileAuditSummary?.duplicateReferences || 0}`,
             `404: ${status.fileAuditSummary?.notFound || 0}`,
             `403: ${status.fileAuditSummary?.forbidden || 0}`,
         ];
@@ -209,6 +211,61 @@
         return td;
     }
 
+    /** ถอดรหัส URL (%-encoded ไทย) เพื่อให้อ่านง่ายขึ้น แต่ลิงก์ยังเปิดได้จริง */
+    function decodeUrlForDisplay(value) {
+        if (!value) return value;
+        try {
+            return decodeURIComponent(String(value));
+        } catch {
+            return String(value);
+        }
+    }
+
+    /**
+     * ย่อข้อความสาเหตุให้สั้น ไม่ซ้ำ URL เดิมทั้งบรรทัด
+     * เช่น "HTTP 400 on https://... (Browser)" → "HTTP 400 (ผ่าน Browser)"
+     */
+    function shortenReason(message) {
+        const text = String(message || "").trim();
+        if (!text) return "";
+
+        const httpMatch = /^HTTP\s+(\d{3})/i.exec(text);
+        if (httpMatch) {
+            const viaBrowser = /\(Browser\)/.test(text) ? " (ผ่าน Browser)" : "";
+            return `HTTP ${httpMatch[1]}${viaBrowser}`;
+        }
+        if (/^ข้าม(?:รูป|ไฟล์)ซ้ำ\s*:/i.test(text)) {
+            return "ข้ามไฟล์ซ้ำ (มีไฟล์เดิมอยู่แล้ว)";
+        }
+        if (/^ข้าม URL โดยไม่เปิดตามนโยบาย/i.test(text)) {
+            return "ข้าม URL ตามนโยบาย";
+        }
+        if (/^ข้ามไฟล์ต่างเว็บไซต์/i.test(text) || /^ข้ามลิงก์ต่างเว็บไซต์/i.test(text)) {
+            return "ข้ามไฟล์ต่างเว็บไซต์";
+        }
+        return text;
+    }
+
+    /** สร้าง cell ที่ตัดข้อความเหลือ 1-2 บรรทัด กดคลิกขยายดูเต็ม (เก็บเต็มไว้ใน tooltip) */
+    function createTruncCell(text, className = "", clampLines = 1) {
+        const td = document.createElement("td");
+        const value = text == null || text === "" ? "-" : String(text);
+        const span = document.createElement("span");
+        span.className = `trunc-cell clamp-${clampLines}`;
+        span.textContent = value;
+        span.title = value === "-" ? "" : value;
+        if (value !== "-" && value.length > (clampLines === 1 ? 32 : 70)) {
+            span.classList.add("trunc-toggle");
+            span.addEventListener("click", (event) => {
+                event.stopPropagation();
+                span.classList.toggle("expanded");
+            });
+        }
+        if (className) td.className = className;
+        td.appendChild(span);
+        return td;
+    }
+
     function renderAuditRows(rows = []) {
         if (!auditTableBody) return;
         auditTableBody.textContent = "";
@@ -226,27 +283,37 @@
 
             const statusCell = document.createElement("td");
             const badge = document.createElement("span");
-            badge.className = `status-badge status-${row.status || "failed"}`;
-            badge.textContent = auditStatusLabels[row.status] || row.status || "-";
+            // แถวที่ URL ซ้ำกับแถวก่อนหน้า จะถูกนับเป็น "ลิงก์ซ้ำ" ใน summary
+            // แสดงป้ายให้ตรงกัน แทนที่จะเป็นป้ายเขียว "มีไฟล์แล้ว" ที่ดูเหมือนสำเร็จ
+            const isDuplicate = Boolean(row.isDuplicateReference);
+            badge.className = `status-badge ${isDuplicate ? "status-duplicate" : `status-${row.status || "failed"}`}`;
+            badge.textContent = isDuplicate
+                ? "ลิงก์ซ้ำ"
+                : auditStatusLabels[row.status] || row.status || "-";
+            if (isDuplicate && row.duplicateOfUrl) {
+                badge.title = `ซ้ำกับ: ${row.duplicateOfUrl}`;
+            }
             statusCell.appendChild(badge);
             tr.appendChild(statusCell);
 
             tr.appendChild(createCell(row.httpStatus));
             tr.appendChild(createCell(row.sectionLabel || row.sectionKey));
-            tr.appendChild(createCell(row.fileName || "ไม่ทราบชื่อ"));
-            tr.appendChild(createCell(row.title, "audit-title-cell"));
+            tr.appendChild(createTruncCell(row.fileName || "ไม่ทราบชื่อ"));
+            tr.appendChild(createTruncCell(row.title, "audit-title-cell", 2));
 
             const urlCell = document.createElement("td");
             const link = document.createElement("a");
-            link.className = "audit-url";
+            link.className = "audit-url trunc-cell clamp-1";
             link.href = row.fileUrl || "#";
             link.target = "_blank";
             link.rel = "noreferrer";
-            link.textContent = row.fileUrl || "-";
+            link.textContent = decodeUrlForDisplay(row.fileUrl) || "-";
+            link.title = row.fileUrl || "";
             urlCell.appendChild(link);
             tr.appendChild(urlCell);
 
-            tr.appendChild(createCell(row.errorMessage || "-"));
+            const reason = shortenReason(row.errorMessage);
+            tr.appendChild(createTruncCell(reason, "", 1));
             auditTableBody.appendChild(tr);
         });
     }
@@ -264,9 +331,13 @@
             renderAuditSummary(data.summary || {});
             renderAuditRows(data.rows || []);
             if (auditResultNote) {
+                const failed = data.summary?.failed || 0;
+                const duplicates = data.summary?.duplicateReferences || 0;
                 auditResultNote.textContent =
-                    `แสดง ${data.rows?.length || 0} จาก ${data.totalMatched || 0} รายการอ้างอิง ` +
-                    `(ไฟล์ไม่ซ้ำทั้งหมด ${data.summary?.uniqueFiles || 0} ไฟล์)`;
+                    `แสดง ${data.rows?.length || 0} จาก ${data.totalMatched || 0} รายการอ้างอิง — ` +
+                    `ไฟล์ไม่ซ้ำ ${data.summary?.uniqueFiles || 0} ไฟล์ ` +
+                    `(ดาวน์โหลดได้ ${data.summary?.downloadable || 0}, ` +
+                    `ล้มเหลว ${failed}, ลิงก์ซ้ำ ${duplicates})`;
             }
         } catch (error) {
             if (auditResultNote) auditResultNote.textContent = `โหลดรายงานไฟล์ไม่สำเร็จ: ${error.message}`;

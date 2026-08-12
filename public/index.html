@@ -343,6 +343,36 @@
                 overflow-wrap: anywhere;
             }
 
+            /* ตัดข้อความยาวให้เหลือ 1-2 บรรทัด กดคลิกเพื่อดูเต็ม */
+            .trunc-cell {
+                display: -webkit-box;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+                overflow-wrap: anywhere;
+            }
+
+            .trunc-cell.clamp-1 {
+                -webkit-line-clamp: 1;
+            }
+
+            .trunc-cell.clamp-2 {
+                -webkit-line-clamp: 2;
+            }
+
+            .trunc-cell.expanded {
+                display: block;
+                -webkit-line-clamp: unset;
+            }
+
+            .trunc-cell.trunc-toggle {
+                cursor: pointer;
+            }
+
+            .trunc-cell.trunc-toggle:hover {
+                background: #f1f5f9;
+                border-radius: 4px;
+            }
+
             .status-badge {
                 display: inline-block;
                 padding: 3px 7px;
@@ -381,6 +411,12 @@
             .status-referenced_stream {
                 background: #e0e7ff;
                 color: #3730a3;
+            }
+
+            .status-duplicate {
+                background: #f1f5f9;
+                color: #64748b;
+                border: 1px dashed #94a3b8;
             }
 
 
@@ -693,10 +729,14 @@
                     <select id="audit-status-filter" aria-label="กรองสถานะไฟล์">
                         <option value="all">ทุกสถานะ</option>
                         <option value="downloaded">ดาวน์โหลดสำเร็จ</option>
+                        <option value="already_exists">มีไฟล์แล้ว</option>
+                        <option value="duplicate">ลิงก์ซ้ำ</option>
                         <option value="not_found">404 / ไม่พบ</option>
                         <option value="forbidden">403 / ถูกปฏิเสธ</option>
                         <option value="unauthorized">401 / ต้องเข้าสู่ระบบ</option>
+                        <option value="rate_limited">429 / ถูกจำกัด</option>
                         <option value="invalid_content">ตอบกลับไม่ใช่ไฟล์</option>
+                        <option value="empty_file">ไฟล์ว่าง</option>
                         <option value="timeout">หมดเวลา</option>
                         <option value="network_error">เครือข่ายผิดพลาด</option>
                         <option value="server_error">Server error</option>
