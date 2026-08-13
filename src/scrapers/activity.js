@@ -755,6 +755,46 @@ async function scrapeActivityPictures({
             uniqueJobs.push(job);
         }
 
+        // ---- กันรูปซ้ำ thumb/ไฟล์เต็ม --------------------------------------------------
+        // PASWorld แสดงรูปเดียวกัน 2 URL ในหน้าเดียวกัน: t_xxx (thumb) และ xxx (ไฟล์เต็ม)
+        // 1) job ที่รู้ลิงก์ไฟล์เต็ม (linkedOriginalUrl จาก lightbox) จะใช้ไฟล์เต็มแทน thumb
+        // 2) thumb (ขึ้นต้น t_) ที่มีคู่ไฟล์เต็มในอัลบั้มเดียวกัน: ถ้าไฟล์เต็มถูกบันทึกแล้วให้ข้าม thumb
+        //    (ไฟล์เต็มดาวน์โหลดไม่ได้ -> เก็บ thumb แทน ไม่ให้รูปหาย)
+        const fullUrlByStem = new Map();
+        for (const job of uniqueJobs) {
+            const url = job.linkedOriginalUrl || job.imageUrl || "";
+            if (!url) continue;
+            try {
+                const base = path.basename(new URL(url).pathname).toLowerCase();
+                if (base && !fullUrlByStem.has(base)) fullUrlByStem.set(base, url);
+            } catch {
+                // ignore malformed URL
+            }
+        }
+        for (const job of uniqueJobs) {
+            const thumbUrl = job.imageUrl || "";
+            if (!thumbUrl) continue;
+            try {
+                const base = path.basename(new URL(thumbUrl).pathname);
+                const stem = /^t_/i.test(base) ? base.replace(/^t_/i, "").toLowerCase() : null;
+                if (!stem) continue;
+                const fullUrl = fullUrlByStem.get(stem);
+                if (fullUrl && fullUrl !== thumbUrl) job.pairedFullUrl = fullUrl;
+            } catch {
+                // ignore malformed URL
+            }
+        }
+        // ไล่ job ที่จะบันทึกไฟล์เต็มก่อนเสมอ เพื่อให้ thumb ที่เป็นคู่เช็ค index เจอแล้วข้ามได้ทันที
+        uniqueJobs.sort((a, b) => {
+            const aSavesFull = Boolean(a.linkedOriginalUrl);
+            const bSavesFull = Boolean(b.linkedOriginalUrl);
+            if (aSavesFull !== bSavesFull) return aSavesFull ? -1 : 1;
+            const aPaired = Boolean(a.pairedFullUrl);
+            const bPaired = Boolean(b.pairedFullUrl);
+            if (aPaired !== bPaired) return aPaired ? 1 : -1;
+            return 0;
+        });
+
         const folderPath = path.join(
             outputDir,
             safeActivityFolderName(details.title, source.albumId),
@@ -794,7 +834,8 @@ async function scrapeActivityPictures({
         let imageIndex = 0;
         for (const imageJob of uniqueJobs) {
             assertNotStopped();
-            const imageUrl = imageJob.imageUrl || imageJob.linkedOriginalUrl;
+            // ใช้ไฟล์เต็ม (linkedOriginalUrl จาก lightbox) ก่อน thumb
+            let imageUrl = imageJob.linkedOriginalUrl || imageJob.imageUrl;
             if (isExcludedActivityImageUrl(imageUrl)) {
                 logger(`ข้ามรูปประกอบระบบ Lightbox/หน้าเว็บก่อนดาวน์โหลด: ${imageUrl}`);
                 continue;
@@ -836,57 +877,109 @@ async function scrapeActivityPictures({
                 // ข้ามไฟล์ซ้ำโดยไม่ดาวน์โหลดเลย — ตรวจ index ก่อนดาวน์โหลด (URL + SHA-256 ถาวรต่อเว็บไซต์)
                 let reuseRecord = fileStore ? fileStore.find(imageUrl) : null;
 
+                // thumb ที่มีคู่ไฟล์เต็ม: ถ้าไฟล์เต็มถูกบันทึกแล้ว (รอบนี้/รอบก่อน) ให้ใช้ไฟล์นั้นแทน ไม่ดาวน์โหลด thumb ซ้ำ
+                if (!reuseRecord && imageJob.pairedFullUrl && imageJob.pairedFullUrl !== imageUrl && fileStore) {
+                    reuseRecord = fileStore.find(imageJob.pairedFullUrl);
+                }
+
                 let result = null;
                 let imageDigest = null;
                 if (!reuseRecord) {
-                    const doDownload = () =>
-                        downloadBinary(imageUrl, logger, 5, {
-                            referer: effectiveActivityUrl,
-                            listingReferer: source.listingUrl,
-                            shouldStop,
-                            expectFile: true,
-                        });
-                    result = imageJob.preloadedResult
-                        ? imageJob.preloadedResult
-                        : fileStore
-                          ? await fileStore.claimDownload(imageUrl, doDownload)
-                          : await doDownload();
-                    const { buffer, headers = {}, statusCode = 200, finalUrl = imageUrl } = result;
+                    // ลอง URL ทีละตัว: ไฟล์เต็มก่อน แล้วค่อย thumb (กันรูปหายถ้าไฟล์เต็มถูกบล็อก)
+                    const candidateUrls = [];
+                    if (imageJob.linkedOriginalUrl) candidateUrls.push(imageJob.linkedOriginalUrl);
+                    if (imageJob.imageUrl && imageJob.imageUrl !== imageJob.linkedOriginalUrl) {
+                        candidateUrls.push(imageJob.imageUrl);
+                    }
+                    if (!candidateUrls.length) candidateUrls.push(imageUrl);
 
-                    if (!buffer || buffer.length === 0) {
-                        emitAudit({
-                            ...auditBase,
-                            status: "empty_file",
-                            httpStatus: statusCode,
-                            downloadable: false,
-                            downloaded: false,
-                            contentType: contentType(headers),
-                            finalUrl,
-                            errorMessage: "เซิร์ฟเวอร์ส่งรูปขนาด 0 ไบต์",
-                        });
-                        continue;
+                    let lastFailure = null;
+                    for (const candidate of candidateUrls) {
+                        if (fileStore && fileStore.find(candidate)) {
+                            reuseRecord = fileStore.find(candidate);
+                            if (candidate !== imageUrl) imageUrl = candidate;
+                            break;
+                        }
+                        const doDownload = () =>
+                            downloadBinary(candidate, logger, 5, {
+                                referer: effectiveActivityUrl,
+                                listingReferer: source.listingUrl,
+                                shouldStop,
+                                expectFile: true,
+                            });
+                        let attempt;
+                        try {
+                            attempt =
+                                imageJob.preloadedResult && candidate === imageJob.imageUrl
+                                    ? imageJob.preloadedResult
+                                    : fileStore
+                                      ? await fileStore.claimDownload(candidate, doDownload)
+                                      : await doDownload();
+                        } catch (error) {
+                            rethrowIfStopped(error);
+                            lastFailure = {
+                                status: "failed",
+                                httpStatus: 0,
+                                finalUrl: candidate,
+                                message: error.message,
+                            };
+                            continue;
+                        }
+                        const { buffer, headers = {}, statusCode = 200, finalUrl = candidate } = attempt;
+
+                        if (!buffer || buffer.length === 0) {
+                            lastFailure = {
+                                status: "empty_file",
+                                httpStatus: statusCode,
+                                finalUrl,
+                                contentType: contentType(headers),
+                                message: "เซิร์ฟเวอร์ส่งรูปขนาด 0 ไบต์",
+                            };
+                            continue;
+                        }
+
+                        if (looksLikeHtml(buffer, headers)) {
+                            lastFailure = {
+                                status: "invalid_content",
+                                httpStatus: statusCode,
+                                finalUrl,
+                                fileSize: buffer.length,
+                                contentType: detectedContentType(buffer, headers),
+                                message: "ลิงก์รูปตอบกลับเป็นหน้า HTML",
+                            };
+                            continue;
+                        }
+
+                        const digest = crypto.createHash("sha256").update(buffer).digest("hex");
+                        const reuse = fileStore
+                            ? fileStore.find(candidate, finalUrl || candidate) ||
+                              fileStore.findByDigest(digest)
+                            : null;
+                        if (candidate !== imageUrl) {
+                            logger(`ดาวน์โหลด URL หลักไม่ได้ ลองรูปสำรองแทน: ${imageUrl} -> ${candidate}`);
+                            imageUrl = candidate;
+                        }
+                        result = attempt;
+                        imageDigest = digest;
+                        reuseRecord = reuse || null;
+                        lastFailure = null;
+                        break;
                     }
 
-                    if (looksLikeHtml(buffer, headers)) {
+                    if (lastFailure) {
                         emitAudit({
                             ...auditBase,
-                            status: "invalid_content",
-                            httpStatus: statusCode,
+                            status: lastFailure.status,
+                            httpStatus: lastFailure.httpStatus || undefined,
                             downloadable: false,
                             downloaded: false,
-                            fileSize: buffer.length,
-                            contentType: detectedContentType(buffer, headers),
-                            finalUrl,
-                            errorMessage: "ลิงก์รูปตอบกลับเป็นหน้า HTML",
+                            fileSize: lastFailure.fileSize,
+                            contentType: lastFailure.contentType,
+                            finalUrl: lastFailure.finalUrl,
+                            errorMessage: lastFailure.message,
                         });
+                        logger(`ข้ามรูปที่ดาวน์โหลดไม่สำเร็จ: ${lastFailure.finalUrl} — ${lastFailure.message}`);
                         continue;
-                    }
-
-                    imageDigest = crypto.createHash("sha256").update(buffer).digest("hex");
-                    if (fileStore) {
-                        reuseRecord =
-                            fileStore.find(imageUrl, finalUrl || imageUrl) ||
-                            fileStore.findByDigest(imageDigest);
                     }
                 }
                 const actualContentType = reuseRecord
