@@ -110,6 +110,9 @@ class JobRunner {
         this.fileAuditReport = null;
         // เก็บระดับ instance ไม่ใช่ใน lastResult เพราะต้องให้เห็นระหว่างงานรันและตอนงานล้มด้วย
         this.truncatedTopics = [];
+        // คิวส่วนงาน (หมวด) ใช้แสดงใน UI ว่าเหลืออีกกี่หมวด ตัวไหนกำลังทำอยู่
+        // แต่ละรายการ: { key, label, state: "pending" | "running" | "done" | "failed" | "stopped" }
+        this.sectionQueue = [];
         this.databaseEnabled = null;
         this.databaseMode = getDatabaseMode();
         this.databaseError = null;
@@ -149,6 +152,7 @@ class JobRunner {
             fileAuditRowsCount: this.fileAuditRows.length,
             fileAuditReportAvailable: Boolean(this.fileAuditReport),
             truncatedTopics: this.truncatedTopics,
+            sectionQueue: this.sectionQueue,
         };
     }
 
@@ -706,9 +710,17 @@ class JobRunner {
             }
 
             const sectionResults = {};
+            this.sectionQueue = sections.map((section) => ({
+                key: section.key,
+                label: section.label,
+                state: "pending",
+            }));
+            this.log(`คิวส่วนงานทั้งหมด: ${sections.length} ส่วน`);
             for (let i = 0; i < sections.length; i += 1) {
                 const section = sections[i];
+                const queueEntry = this.sectionQueue[i];
                 this.currentStep = section.step;
+                if (queueEntry) queueEntry.state = "running";
                 this.log(`เริ่มดึงข้อมูล: ${section.label}`);
                 const data = await section.run();
                 if (this.databaseEnabled) {
@@ -725,6 +737,7 @@ class JobRunner {
                     this.log(`ข้ามการบันทึก MySQL สำหรับ ${section.label} (โหมดเก็บไฟล์อย่างเดียว)`);
                 }
                 sectionResults[section.key] = section.summarize(data);
+                if (queueEntry) queueEntry.state = "done";
                 this.log(section.logDone(data));
                 // บันทึก index ไฟล์ซ้ำเป็นระยะ (กันข้อมูลหายถ้างานถูกหยุดกลางคัน)
                 fileStore.save();
@@ -782,11 +795,17 @@ class JobRunner {
             if (error && error.message === STOP_ERROR) {
                 this.lastError = null;
                 this.currentStep = "stopped";
+                for (const entry of this.sectionQueue) {
+                    if (entry.state === "running") entry.state = "stopped";
+                }
                 this.log("หยุดงานตามคำสั่งผู้ใช้");
                 return;
             }
             this.lastError = error.message;
             this.currentStep = "failed";
+            for (const entry of this.sectionQueue) {
+                if (entry.state === "running") entry.state = "failed";
+            }
             this.log(`เกิดข้อผิดพลาด: ${error.message}`);
             throw error;
         } finally {

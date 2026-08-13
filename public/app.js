@@ -131,8 +131,54 @@
         if (status.lastResult) lines.push(`result: ${JSON.stringify(status.lastResult)}`);
         statusBox.textContent = `สถานะ:\n${lines.join("\n")}`;
         renderTruncatedTopics(status.truncatedTopics || []);
+        renderSectionQueue(status.sectionQueue || []);
         if (startButton) startButton.disabled = status.running;
         if (stopButton) stopButton.disabled = !status.running || status.stopRequested;
+    }
+
+    const SECTION_STATE_LABELS = {
+        pending: "รอ",
+        running: "กำลังทำ",
+        done: "เสร็จแล้ว",
+        failed: "ล้มเหลว",
+        stopped: "หยุด",
+    };
+
+    function renderSectionQueue(queue) {
+        const container = document.getElementById("section-queue");
+        const list = document.getElementById("section-queue-list");
+        const summary = document.getElementById("section-queue-summary");
+        if (!container || !list) return;
+        if (!Array.isArray(queue) || !queue.length) {
+            container.hidden = true;
+            return;
+        }
+        container.hidden = false;
+
+        const doneCount = queue.filter((item) => item.state === "done").length;
+        const runningItem = queue.find((item) => item.state === "running");
+        if (summary) {
+            summary.textContent =
+                `— เสร็จแล้ว ${doneCount}/${queue.length}` +
+                (runningItem ? ` | กำลังทำ: ${runningItem.label}` : "");
+        }
+
+        list.textContent = "";
+        for (const item of queue) {
+            const li = document.createElement("li");
+            li.className = `section-queue-item ${item.state || "pending"}`;
+
+            const dot = document.createElement("span");
+            dot.className = "state-dot";
+
+            const label = document.createElement("span");
+            const stateText = SECTION_STATE_LABELS[item.state] || "";
+            label.textContent = stateText ? `${item.label} (${stateText})` : item.label;
+
+            li.appendChild(dot);
+            li.appendChild(label);
+            list.appendChild(li);
+        }
     }
 
     function appendLogs(logs) {

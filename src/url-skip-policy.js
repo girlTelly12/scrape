@@ -1,5 +1,15 @@
 const DEFAULT_SKIPPED_HOSTS = ["info.go.th"];
 
+// Google Drive/Docs หน้า viewer (เช่น /file/d/XXX/preview หรือ /view) ตอบ HTML viewer เสมอ
+// ไม่สามารถดาวน์โหลดไฟล์ดิบได้โดยตรง — ข้ามตั้งแต่ต้น กัน Browser fallback chain
+// (referer warming + canvas/screenshot) ค้างอยู่กับ URL พวกนี้เป็นนาทีๆ
+// หมายเหตุ: ไม่บล็อก drive.google.com/uc?export=download หรือ drive.usercontent.google.com
+// เพราะรูปแบบนั้นตอบไฟล์ดิบจริง
+const HARD_SKIPPED_URL_PATTERNS = [
+    { re: /drive\.google\.com\/file\/d\//i, reason: "Google Drive viewer (/file/d/...) ไม่รองรับการดาวน์โหลดไฟล์ดิบ" },
+    { re: /docs\.google\.com\/file\/d\//i, reason: "Google Docs viewer (/file/d/...) ไม่รองรับการดาวน์โหลดไฟล์ดิบ" },
+];
+
 function splitSetting(value) {
     return String(value || "")
         .split(/[\r\n,;]+/)
@@ -57,6 +67,11 @@ function getUrlSkipReason(rawUrl) {
         return `ข้าม protocol ที่ไม่รองรับ: ${parsed.protocol}`;
     }
 
+    // ตรวจ rule แบบตายตัวก่อน (อิสระจาก env) — URL เหล่านี้ดาวน์โหลดตรงไม่ได้จริงๆ
+    for (const rule of HARD_SKIPPED_URL_PATTERNS) {
+        if (rule.re.test(parsed.toString())) return rule.reason;
+    }
+
     const hostname = normalizeHostname(parsed.hostname);
     for (const blockedHost of configuredSkippedHosts()) {
         if (hostMatches(hostname, blockedHost)) {
@@ -88,6 +103,7 @@ function createSkippedUrlError(rawUrl, reason = getUrlSkipReason(rawUrl)) {
 
 module.exports = {
     DEFAULT_SKIPPED_HOSTS,
+    HARD_SKIPPED_URL_PATTERNS,
     configuredSkippedHosts,
     configuredSkippedUrlFragments,
     createSkippedUrlError,

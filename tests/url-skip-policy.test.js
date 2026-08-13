@@ -22,6 +22,18 @@ try {
     assert.strictEqual(shouldSkipUrl("https://www.nathamnuae.go.th/detail.php?id=3626"), false);
     assert.match(getUrlSkipReason("https://info.go.th/test"), /ห้ามเปิด/);
 
+    // Google Drive/Docs viewer — ดาวน์โหลดไฟล์ดิบตรงไม่ได้ (ตอบ HTML viewer เสมอ)
+    assert.strictEqual(
+        shouldSkipUrl("https://drive.google.com/file/d/119_bi_c3cUlfCuZbxgxkoZNqS72Q7U_l/preview"),
+        true,
+    );
+    assert.strictEqual(shouldSkipUrl("https://drive.google.com/file/d/abc123/view"), true);
+    assert.strictEqual(shouldSkipUrl("https://docs.google.com/file/d/xyz/preview"), true);
+    assert.match(getUrlSkipReason("https://drive.google.com/file/d/abc/preview"), /Google Drive viewer/);
+    // รูปแบบที่ตอบไฟล์ดิบจริงต้องไม่ถูกข้าม
+    assert.strictEqual(shouldSkipUrl("https://drive.google.com/uc?export=download&id=abc123"), false);
+    assert.strictEqual(shouldSkipUrl("https://drive.usercontent.google.com/download?id=abc123"), false);
+
     process.env.SCRAPER_USE_DEFAULT_SKIP_HOSTS = "false";
     process.env.SCRAPER_SKIP_HOSTS = "example.go.th";
     assert.strictEqual(shouldSkipUrl("https://info.go.th/test"), false);

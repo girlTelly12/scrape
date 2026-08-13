@@ -218,6 +218,98 @@
                 white-space: pre-wrap;
             }
 
+            .section-queue {
+                margin-top: 16px;
+                padding: 12px;
+                background: #f8fafc;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+            }
+
+            .section-queue h2 {
+                margin: 0 0 8px;
+                font-size: 15px;
+            }
+
+            .section-queue-list {
+                list-style: none;
+                margin: 0;
+                padding: 0;
+                display: grid;
+                gap: 4px;
+                max-height: 280px;
+                overflow-y: auto;
+            }
+
+            .section-queue-item {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 6px 8px;
+                border-radius: 6px;
+                font-size: 13px;
+            }
+
+            .section-queue-item .state-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                flex: none;
+            }
+
+            .section-queue-item.pending {
+                color: #64748b;
+            }
+
+            .section-queue-item.pending .state-dot {
+                background: #cbd5e1;
+            }
+
+            .section-queue-item.running {
+                background: #eff6ff;
+                color: #1d4ed8;
+                font-weight: 600;
+            }
+
+            .section-queue-item.running .state-dot {
+                background: #2563eb;
+                animation: queue-pulse 1.2s infinite;
+            }
+
+            .section-queue-item.done {
+                color: #166534;
+            }
+
+            .section-queue-item.done .state-dot {
+                background: #16a34a;
+            }
+
+            .section-queue-item.failed {
+                color: #b91c1c;
+            }
+
+            .section-queue-item.failed .state-dot {
+                background: #dc2626;
+            }
+
+            .section-queue-item.stopped {
+                color: #92400e;
+            }
+
+            .section-queue-item.stopped .state-dot {
+                background: #d97706;
+            }
+
+            @keyframes queue-pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.35;
+                }
+            }
+
             .muted {
                 color: #475569;
                 font-size: 14px;
@@ -688,6 +780,11 @@
             </form>
 
             <div class="status" id="status-box">สถานะ: ยังไม่เริ่มงาน</div>
+
+            <div class="section-queue" id="section-queue" hidden>
+                <h2>คิวส่วนงาน <span class="muted" id="section-queue-summary"></span></h2>
+                <ul class="section-queue-list" id="section-queue-list"></ul>
+            </div>
 
             <section class="audit-section" id="truncated-section" hidden>
                 <h2>ตารางที่ชื่อถูกย่อ</h2>

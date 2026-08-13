@@ -191,6 +191,20 @@ function browserNumberEnv(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEG
     return Math.max(min, Math.min(max, raw));
 }
 
+/**
+ * รอ promise พร้อมเพดานเวลา — กันการรอค้างไม่มีที่สิ้นสุด
+ * เช่น network response ของเว็บเก่าที่โหลดไม่จบ (counter/iframe/รูปนอกเว็บ)
+ */
+function settleWithTimeout(promise, timeoutMs) {
+    let timer = null;
+    const timeoutPromise = new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
+}
+
 async function stopPageLoading(page) {
     if (!page || page.isClosed()) return;
     let cdp = null;
@@ -1178,8 +1192,14 @@ async function warmRefererAssetCache(context, refererUrl, logger, requestOptions
         await scrollRefererPage(page, requestOptions.shouldStop);
         // รอรูปที่โหลดช้าหลัง scroll และให้ CDP มีเวลารับ loadingFinished
         await waitWithStop(page, 1000, requestOptions.shouldStop, 250);
-        if (pending.size) await Promise.allSettled([...pending]);
-        if (cdpPending.size) await Promise.allSettled([...cdpPending]);
+        // รอ response ที่ค้างอยู่แต่ไม่เกินเพดาน — เดิมรอจนครบทุก response
+        // เว็บราชการเก่ามักมี widget นอกเว็บ (counter/iframe) ที่โหลดไม่จบ -> ค้างตลอด
+        const settleTimeoutMs = browserNumberEnv("BROWSER_ASSET_SETTLE_TIMEOUT_MS", 15000, {
+            min: 1000,
+            max: 120000,
+        });
+        if (pending.size) await settleWithTimeout(Promise.allSettled([...pending]), settleTimeoutMs);
+        if (cdpPending.size) await settleWithTimeout(Promise.allSettled([...cdpPending]), settleTimeoutMs);
         return cache;
     } finally {
         page.off("response", onResponse);
@@ -1812,7 +1832,38 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
             const stream = await download.createReadStream();
             if (!stream) throw new Error(`Browser ดาวน์โหลดไฟล์ไม่สำเร็จ: ${url}`);
             const chunks = [];
-            for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+            // เดิมอ่าน stream จนจบโดยไม่มีเพดาน — ถ้าเซิร์ฟเวอร์ส่งข้อมูลค้าง
+            // งานจะค้างตรงนี้และแท็บไม่ถูกปิด (finally ไปไม่ถึง)
+            const streamTimeoutMs = browserNumberEnv("BROWSER_DOWNLOAD_STREAM_TIMEOUT_MS", 120000, {
+                min: 5000,
+                max: 600000,
+            });
+            let streamTimedOut = false;
+            let streamTimer = null;
+            try {
+                await Promise.race([
+                    (async () => {
+                        for await (const chunk of stream) {
+                            assertNotStopped(requestOptions.shouldStop);
+                            chunks.push(Buffer.from(chunk));
+                        }
+                    })(),
+                    new Promise((resolve) => {
+                        streamTimer = setTimeout(() => {
+                            streamTimedOut = true;
+                            resolve();
+                        }, streamTimeoutMs);
+                    }),
+                ]);
+            } finally {
+                if (streamTimer) clearTimeout(streamTimer);
+            }
+            if (streamTimedOut) {
+                if (logger) {
+                    logger(`Browser ดาวน์โหลดไฟล์ไม่จบใน ${streamTimeoutMs} ms ข้ามไฟล์: ${url}`);
+                }
+                throw new Error(`Browser ดาวน์โหลดไฟล์ไม่จบ (stream หมดเวลา ${streamTimeoutMs} ms): ${url}`);
+            }
             return {
                 buffer: Buffer.concat(chunks),
                 headers: {
