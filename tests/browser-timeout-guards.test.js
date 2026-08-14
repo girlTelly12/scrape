@@ -29,4 +29,35 @@ assert.match(downloadSection, /Promise\.race\(\[/);
 assert.match(downloadSection, /streamTimedOut/);
 assert.match(downloadSection, /assertNotStopped\(requestOptions\.shouldStop\)/);
 
+// raw request ผ่าน CDP ต้องมี timeout สั้นเฉพาะตัว — เดิมใช้ BROWSER_TIMEOUT_MS (90s)
+// ซ้อนกับ timeout ของ page.goto ทำให้ fallback chain ค้างได้หลายนาทีต่อ URL
+const rawRequestSection = browserSource.slice(
+    browserSource.indexOf("async function browserContextRawRequest"),
+    browserSource.indexOf("async function capturedResponseResult"),
+);
+assert.match(rawRequestSection, /BROWSER_RAW_TIMEOUT_MS/);
+assert.match(rawRequestSection, /htmlWrapperHosts\.add/);
+
+// downloadWithBrowser ต้องมีเพดานเวลารวม (deadline) ครอบทั้ง fallback chain
+// และแปลง STOP_ERROR ที่เกิดจาก deadline เป็น error ของไฟล์เดียว (ไม่หยุดงาน)
+const downloadWrapperSection = browserSource.slice(
+    browserSource.indexOf("async function downloadWithBrowser("),
+    browserSource.indexOf("async function downloadWithBrowserInner"),
+);
+assert.match(downloadWrapperSection, /DOWNLOAD_TOTAL_TIMEOUT_MS/);
+assert.match(downloadWrapperSection, /deadlinePassed/);
+assert.match(downloadWrapperSection, /DOWNLOAD_TIMEOUT_EXCEEDED/);
+assert.match(downloadWrapperSection, /shouldStop: \(\) => userShouldStop\(\) \|\| deadlinePassed\(\)/);
+
+// host ที่ยืนยันว่าตอบ HTML ต้องลัดขั้นตอนแพง ๆ: ข้ามอุ่น session ผ่าน referer
+// (คนละ origin), จำกัดเวลารอเปิดหน้า URL ไฟล์, และข้ามการขอ raw รอบสอง
+const innerDownloadSection = browserSource.slice(
+    browserSource.indexOf("async function downloadWithBrowserInner"),
+    browserSource.indexOf("async function captureRenderedPageSnapshot"),
+);
+assert.match(innerDownloadSection, /confirmedHtmlWrapper/);
+assert.match(innerDownloadSection, /ข้ามการอุ่น session ผ่านหน้าอ้างอิง/);
+assert.match(innerDownloadSection, /ข้ามการขอ response ซ้ำรอบสอง/);
+assert.match(innerDownloadSection, /BROWSER_HTML_RETRY_TIMEOUT_MS/);
+
 console.log("browser-timeout-guards contract tests passed");

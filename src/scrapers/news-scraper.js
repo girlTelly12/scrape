@@ -239,10 +239,26 @@ function hasFileExtensionInUrl(url, extensions) {
     }
 }
 
+function isDirectoryListingUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) return false;
+        // directory ล้วน ๆ: ลงท้าย / ไม่มี query และไม่มีนามสกุลไฟล์ใน path
+        if (!parsed.pathname.endsWith("/")) return false;
+        if (parsed.search) return false;
+        return !hasFileExtensionInUrl(url, /\.[a-z0-9]{1,10}(?:$|[?#&])/i);
+    } catch {
+        return false;
+    }
+}
+
 function isDocumentUrl(url) {
     try {
         const parsed = new URL(url);
         if (!["http:", "https:"].includes(parsed.protocol)) return false;
+        // URL ที่เป็น directory (เช่น .../files/) ไม่ใช่ไฟล์ — กันการเปิด Chrome
+        // แล้วรอ timeout หลายนาทีกับลิงก์ที่ชี้ไปหน้า list ไฟล์แทนไฟล์จริง
+        if (isDirectoryListingUrl(url)) return false;
         if (/(?:^|\/)(?:doc_download|downloads?|attachments?|files?|fileupload|upload_file|uploads?|documents?)(?:\/|$)/i.test(parsed.pathname)) {
             return true;
         }
@@ -287,6 +303,9 @@ function extractAssetCandidates(html, detailUrl) {
     const byUrl = new Map();
     const add = (url, discoveredVia, linkText = "", metadata = {}) => {
         if (!isHttpAssetUrl(url)) return;
+        // ลิงก์ที่ชี้ไป directory (ลงท้าย / ไม่มีนามสกุล ไม่มี query) ไม่ใช่ไฟล์ —
+        // ข้ามตั้งแต่ต้น กันการเปิด Chrome แล้วรอ timeout นาน ๆ ต่อ URL
+        if (isDirectoryListingUrl(url)) return;
         const inferredType = metadata.mediaType || (isContentImageUrl(url) ? "image" : isDocumentUrl(url) ? "document" : null);
         const isKnownFile = Boolean(inferredType);
         if (!isKnownFile && !(discoveredVia === "href" && isDownloadLinkText(linkText))) return;
@@ -735,6 +754,21 @@ ${html}`;
                     // ข้ามไฟล์ซ้ำโดยไม่ดาวน์โหลดเลย — ตรวจ index ก่อนดาวน์โหลด (URL + SHA-256 ถาวรต่อเว็บไซต์)
                     let reuseRecord = fileStore ? fileStore.find(candidate.url) : null;
 
+                    // URL นี้เคยตอบ HTML แทนไฟล์ในรอบเดียวกัน — ข้ามโดยไม่ดาวน์โหลดซ้ำ
+                    if (fileStore && fileStore.isFailed(candidate.url)) {
+                        emitAudit({
+                            ...auditBase,
+                            status: "invalid_content",
+                            httpStatus: null,
+                            downloadable: false,
+                            downloaded: false,
+                            finalUrl: candidate.url,
+                            errorMessage: "URL เคยตอบเป็น HTML แทนไฟล์ในรอบนี้ ข้ามดาวน์โหลดซ้ำ",
+                        });
+                        logger(`ข้าม URL ที่เคยตอบ HTML แทนไฟล์: ${candidate.url}`);
+                        continue;
+                    }
+
                     // ยังไม่เคยเห็น URL นี้ใน index -> ดาวน์โหลด
                     // claimDownload กันการดาวน์โหลดซ้ำเมื่อทำงานขนาน (SCRAPE_CONCURRENCY>1)
                     let result = null;
@@ -791,6 +825,11 @@ ${html}`;
                                 errorMessage: "ลิงก์ตอบกลับเป็นหน้า HTML ไม่ใช่ไฟล์เอกสาร/รูปภาพ",
                             });
                             logger(`ข้ามลิงก์ที่ตอบกลับเป็น HTML: ${candidate.url}`);
+                            // จดเป็น URL ที่ตอบ HTML แทนไฟล์ — occurrence ถัดไปของ URL เดิม
+                            // จะข้ามได้ทันที ไม่ต้องขอเซิร์ฟเวอร์ซ้ำ (เก็บเฉพาะรอบนี้)
+                            if (fileStore) {
+                                fileStore.registerFailure({ url: candidate.url, reason: "invalid_content" });
+                            }
                             continue;
                         }
 

@@ -32,6 +32,9 @@ function createFileStore(options = {}) {
     const bySha256 = new Map();
     // URL ที่กำลังถูกดาวน์โหลดอยู่ (กันดาวน์โหลดซ้ำเมื่อทำงานขนาน SCRAPE_CONCURRENCY>1)
     const inFlightDownloads = new Map();
+    // URL ที่ยืนยันแล้วว่าตอบ HTML แทนไฟล์ (เก็บเฉพาะรอบนี้ ไม่เขียนลง index ถาวร)
+    // — URL เดิมที่ปรากฏซ้ำในข่าวหลายรายการจะข้ามได้ทันที ไม่ต้องรอ timeout ซ้ำทุกครั้ง
+    const failedUrls = new Map(); // normalized url -> { url, reason, addedAt }
     let dirty = false;
     let registrationsSinceSave = 0;
 
@@ -142,6 +145,30 @@ function createFileStore(options = {}) {
         return promise;
     }
 
+    /**
+     * จด URL ที่ดาวน์โหลดแล้วได้ HTML แทนไฟล์ (เช่น directory listing, หน้า error)
+     * ใช้เฉพาะรอบการทำงานนี้ เพื่อให้ occurrence ถัดไปของ URL เดิมข้ามได้ทันที
+     * (ไม่มี localPath/sha256 จึงไม่ปะปนกับ index ไฟล์จริง และไม่ถูกเขียนลงดิสก์)
+     */
+    function registerFailure(values = {}) {
+        if (!skipExisting || !values.url) return null;
+        const key = normalizeAssetUrl(values.url);
+        const record = {
+            url: String(values.url),
+            failed: true,
+            reason: values.reason ? String(values.reason) : "invalid_content",
+            addedAt: new Date().toISOString(),
+        };
+        failedUrls.set(key, record);
+        return record;
+    }
+
+    /** URL นี้เคยตอบ HTML แทนไฟล์ในรอบนี้หรือไม่ (ถ้าใช่ให้ข้ามโดยไม่ดาวน์โหลดซ้ำ) */
+    function isFailed(url) {
+        if (!skipExisting) return false;
+        return failedUrls.has(normalizeAssetUrl(url));
+    }
+
     function save() {
         if (!indexPath || !dirty) return;
         dirty = false;
@@ -168,6 +195,8 @@ function createFileStore(options = {}) {
         findByDigest,
         claimDownload,
         register,
+        registerFailure,
+        isFailed,
         save,
         get skipExisting() {
             return skipExisting;

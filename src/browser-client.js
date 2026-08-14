@@ -7,6 +7,10 @@ let browserStatePromise = null;
 let browserNoticeShown = false;
 const refererAssetCache = new Map();
 const STOP_ERROR = "JOB_STOPPED_BY_USER";
+// host ที่ยืนยันแล้วว่าตอบ HTML แทนไฟล์ (ทั้ง HTTP และ CDP raw) — จะข้ามขั้นตอนแพง ๆ
+// (เปิดหน้า referer, ขอ raw รอบสอง, goto timeout ยาว) เพื่อไม่ให้ URL เซิร์ฟเวอร์ช้า
+// ตัวเดียวค้างงานเป็นนาที โดยเฉพาะ URL ที่ไม่ใช่ไฟล์จริง (เช่น directory listing)
+const htmlWrapperHosts = new Set();
 
 function createHttpError(statusCode, url) {
     const status = Number(statusCode) || 0;
@@ -507,7 +511,9 @@ async function browserContextRawRequest(context, url, logger, requestOptions = {
     if (!context.request || typeof context.request.get !== "function") return null;
     assertNotStopped(requestOptions.shouldStop);
 
-    const timeout = Number(process.env.BROWSER_TIMEOUT_MS || 90000);
+    // ขอ response ดิบผ่าน CDP ใช้ timeout สั้นกว่า page.goto — เซิร์ฟเวอร์ที่ไม่ตอบ
+    // ในเวลานี้แทบไม่ตอบอีกเลย การรอ 90s เหมือนเดิมซ้อนกันหลายชั้นคือต้นเหตุงานค้าง
+    const timeout = Number(process.env.BROWSER_RAW_TIMEOUT_MS || 30000);
     const userAgent = await getContextUserAgent(context, logger);
     const headers = {
         Accept: "application/pdf,application/octet-stream,application/zip,image/*,*/*;q=0.8",
@@ -547,6 +553,7 @@ async function browserContextRawRequest(context, url, logger, requestOptions = {
         if (logger) {
             logger(`Chrome request ยังตอบเป็น HTML wrapper กำลังจับ response ไฟล์ดิบ: ${url}`);
         }
+        htmlWrapperHosts.add(new URL(url).hostname);
         return null;
     }
 
@@ -1272,6 +1279,9 @@ async function fetchAssetFromRefererPage(
     // จาก JavaScript ภายใน origin เดียวกัน เพื่อให้ Browser ส่ง Cookie, Referer และ Sec-Fetch-* จริง
     const page = await createWorkerPage(context, logger);
     const timeout = Number(process.env.BROWSER_TIMEOUT_MS || 90000);
+    if (logger) {
+        logger(`เปิดหน้าเพื่ออุ่น session แล้วดึงไฟล์ผ่านหน้าอ้างอิง: ${assetUrl}`);
+    }
     try {
         if (
             requestOptions.listingReferer &&
@@ -1700,6 +1710,37 @@ async function extractImageFromHtmlPage(page, assetUrl, logger, requestOptions =
 }
 
 async function downloadWithBrowser(url, logger, requestOptions = {}) {
+    // เพดานเวลารวมทั้งเส้นทาง fallback ใน Chrome ต่อ 1 ไฟล์ — timeout ย่อยหลายชั้น
+    // (raw request, เปิดหน้า referer, goto, ขอ raw รอบสอง) ซ้อนกันทำให้ URL เซิร์ฟเวอร์ช้า
+    // ตัวเดียวค้างงานได้หลายนาที ค่านี้ตัดที่ขอบเขตบนสุด เกินแล้วถือว่าไฟล์นี้ล้มเท่านั้น
+    const totalTimeoutMs = browserNumberEnv("DOWNLOAD_TOTAL_TIMEOUT_MS", 90000, {
+        min: 15000,
+        max: 600000,
+    });
+    const deadlineAt = Date.now() + totalTimeoutMs;
+    const deadlinePassed = () => Date.now() > deadlineAt;
+    const userShouldStop =
+        typeof requestOptions.shouldStop === "function" ? requestOptions.shouldStop : () => false;
+    try {
+        return await downloadWithBrowserInner(url, logger, {
+            ...requestOptions,
+            // ทุก assertNotStopped/waitWithStop ใน inner และลูกหลานจะหยุดเมื่อหมดเวลา
+            // (ยังเคารพการหยุดงานของผู้ใช้: userShouldStop มาก่อน)
+            shouldStop: () => userShouldStop() || deadlinePassed(),
+        });
+    } catch (error) {
+        // deadline หมด -> ภายในใช้ STOP_ERROR เพื่อ unwind แล้วแปลงเป็น error ของไฟล์นี้
+        // เท่านั้น (การหยุดงานจริงของผู้ใช้ปล่อย STOP_ERROR แบบเดิมให้ job abort ตามเดิม)
+        if (deadlinePassed() && String(error && error.message) === STOP_ERROR) {
+            throw new Error(
+                `DOWNLOAD_TIMEOUT_EXCEEDED: ${url} (ใช้เวลารวมเกิน ${totalTimeoutMs} ms ในขั้นตอน Chrome)`,
+            );
+        }
+        throw error;
+    }
+}
+
+async function downloadWithBrowserInner(url, logger, requestOptions = {}) {
     assertNotStopped(requestOptions.shouldStop);
 
     const originalUrl = url;
@@ -1727,6 +1768,9 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
         const fastRaw = await browserContextRawRequest(context, url, logger, requestOptions);
         if (fastRaw) return fastRaw;
     }
+
+    // host นี้เคยตอบ HTML แทนไฟล์มาแล้ว (จาก HTTP fetch หรือ CDP raw) — ใช้ลัดขั้นตอนแพง ๆ
+    const confirmedHtmlWrapper = htmlWrapperHosts.has(new URL(url).hostname);
 
     // หน้า HTML ใช้แท็บซ้ำจากสระ ลดการเปิดแท็บใหม่ที่ทำให้ Chrome แย่งโฟกัส
     const page = isHtml
@@ -1763,41 +1807,62 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
         // เว็บไซต์บางแห่งป้องกัน hotlink: URL รูปตอบ 403 เมื่อเปิดตรง ๆ
         // แต่โหลดได้เมื่อ Request เกิดจากหน้ากิจกรรมจริง จึงอุ่น Session ด้วยหน้า Referer ก่อน
         if (requestOptions.referer) {
-            try {
-                const refererRaw = await fetchAssetFromRefererPage(
-                    context,
-                    url,
-                    requestOptions.referer,
-                    logger,
-                    requestOptions,
-                );
-                if (refererRaw) return refererRaw;
-
-                if (
-                    requestOptions.listingReferer &&
-                    !sameAssetTarget(requestOptions.listingReferer, requestOptions.referer)
-                ) {
-                    const listingRaw = await fetchAssetFromRefererPage(
+            // ยืนยันแล้วว่าตอบ HTML แทนไฟล์ และไฟล์อยู่คนละ origin กับหน้า referer —
+            // การเปิดหน้า referer มาอุ่น session ไม่มีทางโหลด asset นี้ได้ (คนละเว็บ)
+            // จึงข้าม เพื่อไม่ให้เสียเวลาเปิดหน้า + scroll + canvas หลายสิบวินาที
+            if (confirmedHtmlWrapper && isDifferentOrigin(url, requestOptions.referer)) {
+                if (logger) {
+                    logger(
+                        `ข้ามการอุ่น session ผ่านหน้าอ้างอิง (ยืนยันแล้วว่าตอบ HTML แทนไฟล์): ${url}`,
+                    );
+                }
+            } else {
+                try {
+                    const refererRaw = await fetchAssetFromRefererPage(
                         context,
                         url,
-                        requestOptions.listingReferer,
+                        requestOptions.referer,
                         logger,
                         requestOptions,
                     );
-                    if (listingRaw) return listingRaw;
-                }
-            } catch (error) {
-                if (String(error && error.message) === STOP_ERROR) throw error;
-                if (logger) {
-                    logger(
-                        `ลองดึงไฟล์ผ่านหน้าอ้างอิงไม่สำเร็จ จะลองเปิด URL ไฟล์โดยตรงต่อ: ${url}`,
-                    );
+                    if (refererRaw) return refererRaw;
+
+                    if (
+                        requestOptions.listingReferer &&
+                        !sameAssetTarget(requestOptions.listingReferer, requestOptions.referer)
+                    ) {
+                        const listingRaw = await fetchAssetFromRefererPage(
+                            context,
+                            url,
+                            requestOptions.listingReferer,
+                            logger,
+                            requestOptions,
+                        );
+                        if (listingRaw) return listingRaw;
+                    }
+                } catch (error) {
+                    if (String(error && error.message) === STOP_ERROR) throw error;
+                    if (logger) {
+                        logger(
+                            `ลองดึงไฟล์ผ่านหน้าอ้างอิงไม่สำเร็จ จะลองเปิด URL ไฟล์โดยตรงต่อ: ${url}`,
+                        );
+                    }
                 }
             }
         }
 
         assertNotStopped(requestOptions.shouldStop);
         const timeout = Number(process.env.BROWSER_TIMEOUT_MS || 90000);
+        // host ที่ยืนยันแล้วว่าตอบ HTML: จำกัดเวลารอเปิดหน้าให้สั้น (เปิดซ้ำก็ได้ HTML เหมือนเดิม)
+        const gotoTimeout = confirmedHtmlWrapper
+            ? Math.min(
+                  timeout,
+                  browserNumberEnv("BROWSER_HTML_RETRY_TIMEOUT_MS", 20000, {
+                      min: 3000,
+                      max: 60000,
+                  }),
+              )
+            : timeout;
         const capturedResponses = [];
         const onResponse = (response) => {
             if (sameAssetTarget(response.url(), url)) capturedResponses.push(response);
@@ -1808,10 +1873,13 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
         let response = null;
         let navigationError = null;
 
+        if (logger) {
+            logger(`เปิด URL ไฟล์ตรง ๆ ใน Chrome: ${url}`);
+        }
         try {
             response = await page.goto(url, {
                 waitUntil: "commit",
-                timeout,
+                timeout: gotoTimeout,
                 referer: requestOptions.referer || undefined,
             });
         } catch (error) {
@@ -1880,13 +1948,20 @@ async function downloadWithBrowser(url, logger, requestOptions = {}) {
         if (capturedRaw) return capturedRaw;
 
         // หลังเปิดหน้าแล้ว Cookie/Challenge อาจพร้อมมากขึ้น ลอง raw request อีกครั้ง
-        const rawAfterNavigation = await browserContextRawRequest(
-            context,
-            url,
-            logger,
-            requestOptions,
-        );
-        if (rawAfterNavigation) return rawAfterNavigation;
+        // (ยกเว้น host ที่ยืนยันแล้วว่าตอบ HTML — ขอซ้ำก็ได้ HTML เดิม แต่เสียเวลา 30s)
+        if (confirmedHtmlWrapper) {
+            if (logger) {
+                logger(`ข้ามการขอ response ซ้ำรอบสอง (ยืนยันแล้วว่าตอบ HTML แทนไฟล์): ${url}`);
+            }
+        } else {
+            const rawAfterNavigation = await browserContextRawRequest(
+                context,
+                url,
+                logger,
+                requestOptions,
+            );
+            if (rawAfterNavigation) return rawAfterNavigation;
+        }
 
         assertNotStopped(requestOptions.shouldStop);
         if (navigationError) throw navigationError;
