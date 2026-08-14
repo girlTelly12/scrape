@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { createDbConnection, getDbProfile } = require("./db-profile");
+const { toBoolean } = require("./utils");
 
 
 function getDbConfig(databaseName) {
@@ -12,11 +13,6 @@ function getDatabaseMode() {
     const value = String(process.env.DATABASE_MODE || "auto").trim().toLowerCase();
     if (["required", "auto", "disabled"].includes(value)) return value;
     return "auto";
-}
-
-function toBoolean(value, fallback = false) {
-    if (value === undefined || value === null || value === "") return fallback;
-    return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
 }
 
 function isConnectionError(error) {

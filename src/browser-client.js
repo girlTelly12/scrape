@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { looksLikeHtml } = require("./file-audit");
 const { alignUrlOriginToReferer, isDifferentOrigin } = require("./url-origin");
+const { isHttpUrl, toBoolean } = require("./utils");
 
 let browserStatePromise = null;
 let browserNoticeShown = false;
@@ -38,9 +39,7 @@ async function waitWithStop(page, totalMs, shouldStop, stepMs = 500) {
 }
 
 function boolEnv(name, fallback) {
-    const raw = process.env[name];
-    if (raw === undefined || raw === null || raw === "") return fallback;
-    return !["0", "false", "no", "off"].includes(String(raw).trim().toLowerCase());
+    return toBoolean(process.env[name], fallback);
 }
 
 function firstExisting(paths) {
@@ -1342,14 +1341,6 @@ async function fetchAssetFromRefererPage(
         return result;
     } finally {
         await closeWorkerPage(page, logger);
-    }
-}
-
-function isHttpUrl(value) {
-    try {
-        return ["http:", "https:"].includes(new URL(value).protocol);
-    } catch {
-        return false;
     }
 }
 

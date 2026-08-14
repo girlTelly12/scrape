@@ -26,6 +26,7 @@ const { scrapeWholePublicSite } = require("./scrapers/site-migration");
 const { AONANG_DATABASE_NAME, AONANG_NEWS_SECTIONS } = require("./scrapers/aonang");
 const { sleepWithStop } = require("./common");
 const { getDatabaseMode, prepareDatabase } = require("./db-availability");
+const { isHttpUrl } = require("./utils");
 const { createFileStore } = require("./file-store");
 const fs = require("fs");
 const path = require("path");
@@ -48,15 +49,6 @@ function isScrapeAonangWebsiteName(websiteName) {
     if (raw === "อ่าวนาง") return true;
     const t = raw.toLowerCase().replace(/^scrape_/, "");
     return t === "aonang";
-}
-
-function isHttpUrl(value) {
-    try {
-        const parsed = new URL(value);
-        return parsed.protocol === "http:" || parsed.protocol === "https:";
-    } catch {
-        return false;
-    }
 }
 
 const DEFAULT_STEP_DELAY_MS = 20 * 1000;

@@ -1,7 +1,4 @@
-function toBoolean(value, fallback = false) {
-    if (value === undefined || value === null || value === "") return fallback;
-    return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
-}
+const { toBoolean } = require("./utils");
 
 function normalizeIdentifier(value, fallback) {
     const text = String(value || fallback || "").trim();
@@ -126,5 +123,4 @@ module.exports = {
     getDbProfile,
     sanitizeTis620String,
     tableOptionsSql,
-    toBoolean,
 };

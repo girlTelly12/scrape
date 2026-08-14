@@ -1,14 +1,6 @@
 const { cleanText, extractLinks, fetchHtmlResult } = require("../common");
+const { isHttpUrl } = require("../utils");
 const { VENDOR_DEFINITIONS } = require("./definitions");
-
-function isHttpUrl(value) {
-    try {
-        const parsed = new URL(String(value || "").trim());
-        return parsed.protocol === "http:" || parsed.protocol === "https:";
-    } catch {
-        return false;
-    }
-}
 
 function normalizeRootUrl(value) {
     if (!isHttpUrl(value)) return "";

@@ -31,6 +31,7 @@ assert.deepEqual(prepared.otherTopics, config.otherTopics);
 
 const appJs = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
 assert(!appJs.includes("data.suggestedConfig.procurementUrl"));
-assert(appJs.includes("autoFillSections: false"));
+// UI ไม่มีโหมดเติม URL หมวดอัตโนมัติเลย — ฟิลด์ autoFillSections ถูกถอดออกเพราะเป็น dead code
+assert(!appJs.includes("autoFillSections"));
 
 console.log("manual section URL policy tests passed");

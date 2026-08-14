@@ -1,5 +1,6 @@
 const path = require("path");
 const { cleanText, htmlDecode } = require("../common");
+const { isHttpUrl } = require("../utils");
 
 const CATEGORY_PARAM_NAMES = [
     "cat_id",
@@ -140,13 +141,6 @@ function canonicalizeUrl(url) {
     return parsed.toString();
 }
 
-function isHttpUrl(url) {
-    try {
-        return ["http:", "https:"].includes(new URL(url).protocol);
-    } catch {
-        return false;
-    }
-}
 
 function isAssetLikeUrl(url) {
     try {

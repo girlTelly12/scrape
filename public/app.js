@@ -990,7 +990,6 @@
                 siteUrl: valueOf("siteUrl"),
                 vendorMode: valueOf("vendorMode") || "auto",
                 vendorId: valueOf("vendorId"),
-                autoFillSections: false,
                 fullSiteMigration: Boolean(document.getElementById("fullSiteMigration")?.checked),
                 migrationMaxPages: Number(valueOf("migrationMaxPages") || 1000),
                 migrationMaxAssets: Number(valueOf("migrationMaxAssets") || 10000),

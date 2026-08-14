@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
+const { isHttpUrl, toBoolean } = require("./src/utils");
 const { JobRunner, isScrapeAonangWebsiteName, toDatabaseName } = require("./src/job-runner");
 const {
     deriveOtherTopicTableNameFromUrl,
@@ -38,15 +39,6 @@ function loadEnvFile() {
     }
 }
 
-function isHttpUrl(value) {
-    try {
-        const parsed = new URL(value);
-        return parsed.protocol === "http:" || parsed.protocol === "https:";
-    } catch {
-        return false;
-    }
-}
-
 function deriveWebsiteNameFromUrl(value) {
     try {
         const hostname = new URL(value).hostname.replace(/^www\./i, "");
@@ -54,11 +46,6 @@ function deriveWebsiteNameFromUrl(value) {
     } catch {
         return "";
     }
-}
-
-function toBoolean(value, fallback = false) {
-    if (value === undefined || value === null || value === "") return fallback;
-    return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
 }
 
 /**
@@ -457,7 +444,6 @@ app.post("/api/start", async (req, res) => {
         const otherTopics = normalizeOtherTopics(req.body || {}, resolveDatabaseName(websiteName, siteUrl));
         const vendorMode = String(req.body.vendorMode || "auto").trim().toLowerCase();
         const vendorId = String(req.body.vendorId || "").trim().toLowerCase();
-        const autoFillSections = false;
         const fullSiteMigration = toBoolean(req.body.fullSiteMigration, false);
         const migrationMaxPages = Math.max(1, Math.min(50000, Number(req.body.migrationMaxPages || process.env.MIGRATION_MAX_PAGES || 1000)));
         const migrationMaxAssets = Math.max(1, Math.min(200000, Number(req.body.migrationMaxAssets || process.env.MIGRATION_MAX_ASSETS || 10000)));
@@ -507,7 +493,6 @@ app.post("/api/start", async (req, res) => {
                 siteUrl,
                 vendorMode,
                 vendorId,
-                autoFillSections,
                 fullSiteMigration,
                 migrationMaxPages,
                 migrationMaxAssets,
