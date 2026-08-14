@@ -1,5 +1,4 @@
 (function initApp() {
-    const statusBox = document.getElementById("status-box");
     const form = document.getElementById("start-form");
     const startButton = document.getElementById("start-btn");
     const stopButton = document.getElementById("stop-btn");
@@ -31,6 +30,28 @@
     let statusRefreshInFlight = false;
     let logsRefreshInFlight = false;
     let auditRefreshInFlight = false;
+
+    // ---- องค์ประกอบใหม่: health check, แจ้งเตือน, แถบเครื่องมือ log ----
+    const notifyToggle = document.getElementById("notify-toggle");
+    const logPauseBtn = document.getElementById("log-pause-btn");
+    const logFilter = document.getElementById("log-filter");
+    const logCopyBtn = document.getElementById("log-copy-btn");
+    const healthSection = document.getElementById("health-section");
+    const healthGrid = document.getElementById("health-grid");
+    const healthRefreshBtn = document.getElementById("health-refresh-btn");
+
+    let healthRefreshInFlight = false;
+    let lastRunningState = null;
+    let notifyEnabled = true;
+    try {
+        notifyEnabled = localStorage.getItem("scraper-notify") !== "off";
+    } catch {
+        notifyEnabled = true;
+    }
+    let logPaused = false;
+    let logFilterText = "";
+    const logEntries = [];
+    const MAX_LOG_LINES = 1500;
 
     async function fetchJson(url, options = {}, timeoutMs = 10000) {
         const controller = new AbortController();
@@ -109,30 +130,12 @@
         section.hidden = false;
     }
 
+    /** อัปเดตคิวส่วนงานและปุ่มเริ่ม/หยุด — ข้อมูลสถานะหลักเหลือที่คิวส่วนงาน + log */
     function renderStatus(status) {
-        const lines = [
-            `website: ${status.websiteName || "-"}`,
-            `database: ${status.databaseName || "-"}`,
-            `vendor: ${status.vendorName || "-"}`,
-            `adapter: ${status.vendorId || "-"}`,
-            `vendor confidence: ${status.vendorConfidence == null ? "-" : `${status.vendorConfidence}%`}`,
-            `running: ${status.running ? "yes" : "no"}`,
-            `step: ${status.currentStep || "-"}`,
-            `startedAt: ${status.startedAt || "-"}`,
-            `finishedAt: ${status.finishedAt || "-"}`,
-            `error: ${status.lastError || "-"}`,
-            `files: ${status.fileAuditSummary?.uniqueFiles || 0}`,
-            `downloadable: ${status.fileAuditSummary?.downloadable || 0}`,
-            `failed: ${status.fileAuditSummary?.failed || 0}`,
-            `duplicates: ${status.fileAuditSummary?.duplicateReferences || 0}`,
-            `404: ${status.fileAuditSummary?.notFound || 0}`,
-            `403: ${status.fileAuditSummary?.forbidden || 0}`,
-        ];
-        if (status.lastResult) lines.push(`result: ${JSON.stringify(status.lastResult)}`);
-        statusBox.textContent = `สถานะ:\n${lines.join("\n")}`;
+        const queue = Array.isArray(status.sectionQueue) ? status.sectionQueue : [];
         renderTruncatedTopics(status.truncatedTopics || []);
-        renderSectionQueue(status.sectionQueue || []);
-        if (startButton) startButton.disabled = status.running;
+        renderSectionQueue(queue);
+        if (startButton) startButton.disabled = Boolean(status.running);
         if (stopButton) stopButton.disabled = !status.running || status.stopRequested;
     }
 
@@ -181,11 +184,192 @@
         }
     }
 
+    /** แยกระดับ log จากข้อความ เพื่อระบายสี: error / warn / info */
+    function classifyLogLevel(message) {
+        const text = String(message || "");
+        if (
+            /(เกิดข้อผิดพลาด|ไม่สำเร็จ|ล้มเหลว|ผิดพลาด|HTTP\s+[45]\d\d|หมดเวลา|timeout|ECONNREFUSED|ENOTFOUND|Cannot|fail|error)/i.test(
+                text,
+            )
+        ) {
+            return "error";
+        }
+        if (/(ข้าม|เตือน|warning|หน่วง|พยายาม|ยังไม่พร้อม|ลอง)/i.test(text)) return "warn";
+        return "info";
+    }
+
+    function applyLogFilter() {
+        if (!logOutput) return;
+        const keyword = logFilterText.trim().toLowerCase();
+        for (const div of logOutput.children) {
+            div.style.display = !keyword || div.textContent.toLowerCase().includes(keyword) ? "" : "none";
+        }
+    }
+
     function appendLogs(logs) {
         if (!logOutput || !logs.length) return;
-        const chunk = logs.map((log) => `[${log.time}] ${log.message}`).join("\n");
-        logOutput.textContent += `${chunk}\n`;
-        logOutput.scrollTop = logOutput.scrollHeight;
+        const fragment = document.createDocumentFragment();
+        for (const log of logs) {
+            logEntries.push(log);
+            const div = document.createElement("div");
+            div.className = `log-line ${classifyLogLevel(log.message)}`;
+            div.textContent = `[${log.time}] ${log.message}`;
+            fragment.appendChild(div);
+        }
+        logOutput.appendChild(fragment);
+        while (logOutput.childElementCount > MAX_LOG_LINES) logOutput.removeChild(logOutput.firstChild);
+        applyLogFilter();
+        if (!logPaused) logOutput.scrollTop = logOutput.scrollHeight;
+    }
+
+    function copyLogs() {
+        const text = logEntries.map((log) => `[${log.time}] ${log.message}`).join("\n");
+        const showCopied = () => {
+            if (logCopyBtn) logCopyBtn.textContent = "📋 คัดลอกแล้ว";
+            setTimeout(() => {
+                if (logCopyBtn) logCopyBtn.textContent = "📋 คัดลอกทั้งหมด";
+            }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(showCopied).catch(() => {
+                if (logCopyBtn) logCopyBtn.textContent = "คัดลอกไม่ได้";
+            });
+        } else {
+            if (logCopyBtn) logCopyBtn.textContent = "คัดลอกไม่ได้";
+        }
+    }
+
+    // ---- แจ้งเตือนเบราว์เซอร์ + เสียงเมื่อสถานะเปลี่ยน (C2) ----
+
+    function playBeep(success = true) {
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            const ctx = new Ctx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = "sine";
+            osc.frequency.value = success ? 880 : 330;
+            const duration = success ? 0.6 : 0.9;
+            gain.gain.setValueAtTime(0.12, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+            osc.start();
+            osc.stop(ctx.currentTime + duration);
+            osc.onended = () => ctx.close().catch(() => {});
+        } catch {
+            // เบราว์เซอร์ไม่รองรับเสียง — ข้าม
+        }
+    }
+
+    function ensureNotificationPermission() {
+        if (!("Notification" in window)) return false;
+        if (Notification.permission === "default") Notification.requestPermission().catch(() => {});
+        return Notification.permission === "granted";
+    }
+
+    /** ส่ง Notification + เสียงเมื่อสถานะ running เปลี่ยน (เริ่ม / จบ / หยุด / ล้มเหลว) */
+    function maybeNotifyStatus(status) {
+        if (!notifyEnabled) {
+            lastRunningState = Boolean(status.running);
+            return;
+        }
+        const running = Boolean(status.running);
+        const previous = lastRunningState;
+        lastRunningState = running;
+        if (previous === null || previous === running) return;
+
+        const summary = status.fileAuditSummary || {};
+        let title;
+        let ok = true;
+        if (running) {
+            title = "เริ่มงานแล้ว";
+        } else if (status.currentStep === "stopped") {
+            title = "หยุดงานแล้ว";
+        } else if (status.currentStep === "failed" || status.lastError) {
+            title = "งานล้มเหลว";
+            ok = false;
+        } else {
+            title = "งานเสร็จสมบูรณ์";
+        }
+        const body =
+            `เว็บไซต์: ${status.websiteName || "-"}\n` +
+            `ไฟล์ที่ได้: ${summary.downloadable || 0} | ล้มเหลว: ${summary.failed || 0} | ซ้ำ: ${summary.duplicateReferences || 0}` +
+            (status.lastError ? `\nข้อผิดพลาด: ${status.lastError}` : "");
+
+        if (ensureNotificationPermission()) {
+            try {
+                new Notification(title, { body });
+            } catch {
+                // บางเบราว์เซอร์ require service worker — ข้ามไป
+            }
+        }
+        playBeep(ok);
+    }
+
+    // ---- แผงตรวจสุขภาพระบบ (B1) ----
+
+    const HEALTH_LEVEL_LABELS = { ok: "พร้อม", warn: "ควรตรวจ", error: "มีปัญหา" };
+
+    function renderHealth(data) {
+        if (!healthGrid || !healthSection) return;
+        const items = Array.isArray(data.items) ? data.items : [];
+        healthSection.hidden = false;
+        healthGrid.textContent = "";
+        if (!items.length) {
+            const div = document.createElement("div");
+            div.className = "muted";
+            div.textContent = "ไม่มีข้อมูลการตรวจสอบ";
+            healthGrid.appendChild(div);
+            return;
+        }
+        for (const item of items) {
+            const card = document.createElement("div");
+            card.className = `health-card ${item.level || "ok"}`;
+
+            const title = document.createElement("div");
+            title.className = "health-title";
+            const dot = document.createElement("span");
+            dot.className = "health-dot";
+            const name = document.createElement("span");
+            name.textContent = `${item.label} — ${HEALTH_LEVEL_LABELS[item.level] || item.level}`;
+            title.append(dot, name);
+            card.appendChild(title);
+
+            const msg = document.createElement("div");
+            msg.className = "health-msg";
+            msg.textContent = item.message || "";
+            card.appendChild(msg);
+
+            if (item.hint) {
+                const hint = document.createElement("div");
+                hint.className = "health-hint";
+                hint.textContent = `💡 ${item.hint}`;
+                card.appendChild(hint);
+            }
+            healthGrid.appendChild(card);
+        }
+    }
+
+    async function refreshHealth() {
+        if (healthRefreshInFlight) return;
+        healthRefreshInFlight = true;
+        try {
+            const data = await fetchJson("/api/health", {}, 8000);
+            renderHealth(data);
+        } catch (error) {
+            if (healthSection) healthSection.hidden = false;
+            if (healthGrid) {
+                healthGrid.textContent = "";
+                const div = document.createElement("div");
+                div.className = "health-card error";
+                div.textContent = `ตรวจสุขภาพระบบไม่สำเร็จ: ${error.message}`;
+                healthGrid.appendChild(div);
+            }
+        } finally {
+            healthRefreshInFlight = false;
+        }
     }
 
     async function refreshStatus() {
@@ -194,8 +378,14 @@
         try {
             const status = await fetchJson("/api/status", {}, 6000);
             renderStatus(status);
+            maybeNotifyStatus(status);
         } catch (error) {
-            statusBox.textContent = `สถานะ: โหลดไม่สำเร็จ - ${error.message}`;
+            appendLogs([
+                {
+                    time: new Date().toISOString(),
+                    message: `โหลดสถานะไม่สำเร็จ: ${error.message}`,
+                },
+            ]);
         } finally {
             statusRefreshInFlight = false;
         }
@@ -823,6 +1013,7 @@
                 startButton.textContent = "กำลังส่งงานให้ Server...";
                 if (logOutput) {
                     logOutput.textContent = "";
+                    logEntries.length = 0;
                     nextLogIndex = 0;
                 }
                 await fetchJson(
@@ -885,11 +1076,41 @@
         });
     }
 
+    // ปุ่ม/ตัวกรองใหม่
+    if (healthRefreshBtn) healthRefreshBtn.addEventListener("click", refreshHealth);
+    if (notifyToggle) {
+        notifyToggle.checked = notifyEnabled;
+        notifyToggle.addEventListener("change", () => {
+            notifyEnabled = notifyToggle.checked;
+            try {
+                localStorage.setItem("scraper-notify", notifyEnabled ? "on" : "off");
+            } catch {
+                // localStorage ใช้ไม่ได้ — ข้าม
+            }
+        });
+    }
+    if (logPauseBtn) {
+        logPauseBtn.addEventListener("click", () => {
+            logPaused = !logPaused;
+            logPauseBtn.textContent = logPaused ? "▶ เลื่อนอัตโนมัติ" : "⏸ หยุดเลื่อนอัตโนมัติ";
+            if (!logPaused && logOutput) logOutput.scrollTop = logOutput.scrollHeight;
+        });
+    }
+    if (logFilter) {
+        logFilter.addEventListener("input", () => {
+            logFilterText = logFilter.value;
+            applyLogFilter();
+        });
+    }
+    if (logCopyBtn) logCopyBtn.addEventListener("click", copyLogs);
+
     loadVendorAdapters();
     refreshStatus();
     refreshLogs();
     refreshFileAudit();
+    refreshHealth();
     setInterval(refreshStatus, 3000);
     setInterval(refreshLogs, 2000);
     setInterval(refreshFileAudit, 5000);
+    setInterval(refreshHealth, 30000);
 })();

@@ -209,13 +209,136 @@
                 margin-bottom: 0;
             }
 
-            .status {
-                margin-top: 16px;
+            .notify-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-size: 13px;
+                font-weight: 600;
+                color: #475569;
+                cursor: pointer;
+            }
+
+            .notify-row input {
+                width: auto;
+                margin: 0;
+            }
+
+            .health-section {
+                margin-bottom: 18px;
+                padding: 16px;
+                border: 1px solid #cbd5e1;
+                border-radius: 12px;
+                background: #fff;
+            }
+
+            .health-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 10px;
+            }
+
+            .health-header h2 {
+                margin: 0;
+                font-size: 18px;
+            }
+
+            .health-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                gap: 10px;
+            }
+
+            .health-card {
                 padding: 12px;
-                background: #ecfeff;
-                border: 1px solid #a5f3fc;
+                border: 1px solid #dbe4ee;
+                border-radius: 9px;
+                background: #f8fafc;
+            }
+
+            .health-card.ok {
+                border-color: #bbf7d0;
+            }
+
+            .health-card.warn {
+                border-color: #fde68a;
+            }
+
+            .health-card.error {
+                border-color: #fecaca;
+            }
+
+            .health-card .health-title {
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .health-card .health-msg {
+                margin-top: 6px;
+                font-size: 13px;
+                color: #334155;
+                word-break: break-word;
+            }
+
+            .health-card .health-hint {
+                margin-top: 6px;
+                font-size: 12px;
+                color: #92400e;
+            }
+
+            .health-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                flex: none;
+                background: #94a3b8;
+            }
+
+            .health-card.ok .health-dot {
+                background: #16a34a;
+            }
+
+            .health-card.warn .health-dot {
+                background: #d97706;
+            }
+
+            .health-card.error .health-dot {
+                background: #dc2626;
+            }
+
+            .log-toolbar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                align-items: center;
+                margin-top: 16px;
+                margin-bottom: 8px;
+            }
+
+            .log-toolbar input {
+                flex: 1 1 200px;
+                min-width: 140px;
+                padding: 8px 10px;
+                border: 1px solid #cbd5e1;
                 border-radius: 8px;
-                white-space: pre-wrap;
+                font: inherit;
+                background: #fff;
+            }
+
+            .log-line.error {
+                color: #fca5a5;
+            }
+
+            .log-line.warn {
+                color: #fcd34d;
+            }
+
+            .log-line.info {
+                color: #e2e8f0;
             }
 
             .section-queue {
@@ -607,6 +730,14 @@
                 ลิงก์จัดซื้อจัดจ้าง ข่าวประชาสัมพันธ์ กิจกรรม และหมวดเพิ่มเติม ให้ผู้ใช้กรอกเอง ระบบจะไม่เติมหรือเขียนทับ
             </p>
 
+            <section class="health-section" id="health-section" hidden>
+                <div class="health-header">
+                    <h2>ตรวจสอบระบบก่อนเริ่มงาน</h2>
+                    <button id="health-refresh-btn" type="button" class="secondary">ตรวจอีกครั้ง</button>
+                </div>
+                <div class="health-grid" id="health-grid"></div>
+            </section>
+
             <form id="start-form">
                 <section class="vendor-panel">
                     <div class="vendor-grid">
@@ -777,9 +908,15 @@
 
                 <button id="start-btn" type="submit">เริ่มดึงข้อมูล</button>
                 <button id="stop-btn" type="button" class="danger">หยุดการดึงข้อมูล</button>
+                <label
+                    class="notify-row"
+                    style="margin-left: 12px"
+                    title="แจ้งเตือนผ่านเบราว์เซอร์พร้อมเสียงเมื่องานจบหรือล้มเหลว"
+                >
+                    <input id="notify-toggle" type="checkbox" checked />
+                    แจ้งเตือนเมื่อจบ
+                </label>
             </form>
-
-            <div class="status" id="status-box">สถานะ: ยังไม่เริ่มงาน</div>
 
             <div class="section-queue" id="section-queue" hidden>
                 <h2>คิวส่วนงาน <span class="muted" id="section-queue-summary"></span></h2>
@@ -869,6 +1006,11 @@
                 </div>
             </section>
 
+            <div class="log-toolbar">
+                <button id="log-pause-btn" type="button" class="secondary">⏸ หยุดเลื่อนอัตโนมัติ</button>
+                <input id="log-filter" type="search" placeholder="กรอง log ด้วยคำค้น..." />
+                <button id="log-copy-btn" type="button" class="secondary">📋 คัดลอกทั้งหมด</button>
+            </div>
             <div class="logs" id="log-output">[ยังไม่มี log]</div>
         </div>
 

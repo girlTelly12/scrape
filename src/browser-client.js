@@ -2156,4 +2156,5 @@ module.exports = {
     closeBrowserConnection,
     downloadWithBrowser,
     extractImageFromHtmlPage,
+    findBrowserExecutable,
 };

@@ -9,6 +9,8 @@ const {
     parseCustomTopicTableName,
 } = require("./src/db");
 const { AONANG_DATABASE_NAME } = require("./src/scrapers/aonang");
+const { getDatabaseMode, probeDatabase } = require("./src/db-availability");
+const { findBrowserExecutable } = require("./src/browser-client");
 
 /** ชื่อฐานที่งานจะใช้จริง — ต้องรู้ก่อน เพราะลิมิตความยาวชื่อตารางขึ้นกับความยาวชื่อฐาน */
 function resolveDatabaseName(websiteName, siteUrl) {
@@ -139,6 +141,163 @@ if (String(process.env.DATABASE_MODE || "auto").trim().toLowerCase() !== "disabl
         });
 }
 
+// ---- ตรวจสุขภาพระบบ สำหรับหน้าเว็บ (B1) ----
+
+function withTimeout(promise, ms, message) {
+    let timer;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(message)), ms);
+        }),
+    ]).finally(() => clearTimeout(timer));
+}
+
+async function checkMysqlHealth() {
+    const mode = getDatabaseMode();
+    if (mode === "disabled") {
+        return {
+            key: "mysql",
+            label: "MySQL",
+            ok: true,
+            level: "ok",
+            message: "ปิดใช้งานตาม DATABASE_MODE=disabled — งานจะเก็บไฟล์อย่างเดียว",
+        };
+    }
+    try {
+        const result = await withTimeout(
+            probeDatabase("scraper_health"),
+            5000,
+            "ตรวจ MySQL ใช้เวลานานเกินไป",
+        );
+        return {
+            key: "mysql",
+            label: "MySQL",
+            ok: true,
+            level: "ok",
+            message: `เชื่อมต่อได้ (${result.config.host}:${result.config.port})`,
+        };
+    } catch (error) {
+        const required = mode === "required";
+        return {
+            key: "mysql",
+            label: "MySQL",
+            ok: false,
+            level: required ? "error" : "warn",
+            message: required
+                ? `เชื่อมต่อ MySQL ไม่ได้ (โหมด required) — ระบบจะไม่เริ่มงาน: ${error.message}`
+                : `เชื่อมต่อ MySQL ไม่ได้ — งานจะยังทำต่อแบบเก็บไฟล์อย่างเดียว: ${error.message}`,
+            hint: "เปิด MySQL ใน XAMPP (หรือรัน start.bat) แล้วกดตรวจอีกครั้ง",
+        };
+    }
+}
+
+async function checkBrowserHealth() {
+    const mode = String(process.env.BROWSER_MODE || "auto").trim().toLowerCase();
+    const cdpUrl = (process.env.BROWSER_CDP_URL || "http://127.0.0.1:9222").replace(/\/+$/, "");
+    const executable = findBrowserExecutable();
+
+    let cdpOk = false;
+    if (mode !== "launch") {
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 2500);
+            const response = await fetch(`${cdpUrl}/json/version`, { signal: controller.signal });
+            clearTimeout(timer);
+            cdpOk = response.ok;
+        } catch {
+            cdpOk = false;
+        }
+    }
+
+    const modeLabels = { auto: "auto (ลอง CDP ก่อน แล้วเปิดเอง)", cdp: "cdp (ใช้ Chrome ที่เปิดไว้)", launch: "launch (เปิด Chrome เอง)" };
+    if (mode === "cdp" && !cdpOk) {
+        return {
+            key: "browser",
+            label: "Chrome",
+            ok: false,
+            level: "error",
+            message: `เชื่อมต่อ Chrome ที่ ${cdpUrl} ไม่ได้ (โหมด ${mode})`,
+            hint: "เปิด Chrome ด้วย --remote-debugging-port=9222 หรือรัน start.bat",
+        };
+    }
+    if (!cdpOk && !executable) {
+        return {
+            key: "browser",
+            label: "Chrome",
+            ok: false,
+            level: "warn",
+            message: "ไม่พบ Chrome/CDP และไม่พบ Google Chrome, Edge หรือ Chromium ในเครื่อง",
+            hint: "ติดตั้ง Chrome หรือกำหนด BROWSER_EXECUTABLE_PATH ใน .env — งานจะยังทำได้เฉพาะส่วนที่ตอบ HTTP ปกติ",
+        };
+    }
+    const detail = cdpOk
+        ? `เชื่อมต่อ CDP ได้ที่ ${cdpUrl}`
+        : `ยังไม่เปิด CDP — ระบบจะเปิด Chrome เอง (${executable}) เมื่อจำเป็น`;
+    return {
+        key: "browser",
+        label: "Chrome",
+        ok: true,
+        level: "ok",
+        message: `${detail} (โหมด ${modeLabels[mode] || mode})`,
+    };
+}
+
+function checkEnvHealth() {
+    const envPath = path.join(__dirname, ".env");
+    const hasEnvFile = fs.existsSync(envPath);
+    const notes = [
+        hasEnvFile ? "พบไฟล์ .env แล้ว" : "ยังไม่มีไฟล์ .env — คัดลอก .env.example ไปเป็น .env แล้วตั้งค่า",
+        `DATABASE_MODE=${process.env.DATABASE_MODE || "auto"}`,
+        `BROWSER_MODE=${process.env.BROWSER_MODE || "auto"}`,
+        `SCRAPE_CONCURRENCY=${process.env.SCRAPE_CONCURRENCY || "1"}`,
+    ];
+    return {
+        key: "env",
+        label: "การตั้งค่า",
+        ok: true,
+        level: hasEnvFile ? "ok" : "warn",
+        message: notes.join(" | "),
+        hint: hasEnvFile ? "" : "โปรแกรมยังใช้ค่า default ได้ แต่ควรตั้งค่าให้ตรงกับเครื่องของคุณ",
+    };
+}
+
+function checkDiskHealth() {
+    try {
+        if (typeof fs.statfsSync !== "function") {
+            return {
+                key: "disk",
+                label: "พื้นที่ดิสก์",
+                ok: true,
+                level: "ok",
+                message: "ตรวจไม่พบข้อมูลพื้นที่ว่าง (Node เวอร์ชันนี้ไม่รองรับ)",
+            };
+        }
+        const downloadsDir = path.join(__dirname, "downloads");
+        const target = fs.existsSync(downloadsDir) ? downloadsDir : __dirname;
+        const stats = fs.statfsSync(target);
+        const freeGb = (stats.bavail * stats.bsize) / 1e9;
+        const totalGb = (stats.blocks * stats.bsize) / 1e9;
+        const level = freeGb < 1 ? "error" : freeGb < 10 ? "warn" : "ok";
+        return {
+            key: "disk",
+            label: "พื้นที่ดิสก์",
+            ok: level !== "error",
+            level,
+            message: `เหลือ ${freeGb.toFixed(1)} GB จาก ${totalGb.toFixed(1)} GB`,
+            hint: freeGb < 1 ? "พื้นที่เกือบเต็มแล้ว ควรลบไฟล์ในโฟลเดอร์ downloads ที่ไม่ใช้" : "",
+        };
+    } catch (error) {
+        return {
+            key: "disk",
+            label: "พื้นที่ดิสก์",
+            ok: true,
+            level: "ok",
+            message: `ตรวจพื้นที่ว่างไม่สำเร็จ: ${error.message}`,
+        };
+    }
+}
+
 const app = express();
 const jobRunner = new JobRunner();
 const port = Number(process.env.APP_PORT || 3000);
@@ -148,6 +307,24 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/status", (req, res) => {
     res.json(jobRunner.getStatus());
+});
+
+app.get("/api/health", async (req, res) => {
+    try {
+        const items = await Promise.all([checkMysqlHealth(), checkBrowserHealth()]);
+        items.push(checkEnvHealth(), checkDiskHealth());
+        res.json({
+            ok: !items.some((item) => item.level === "error"),
+            checkedAt: new Date().toISOString(),
+            items,
+            server: {
+                running: jobRunner.getStatus().running,
+                port,
+            },
+        });
+    } catch (error) {
+        res.status(500).json({ ok: false, message: error.message });
+    }
 });
 
 app.get("/api/vendors", (req, res) => {
