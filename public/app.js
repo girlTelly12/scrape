@@ -84,10 +84,16 @@
      * ตารางที่ชื่อถูกย่อ — ซ่อนไว้เมื่อไม่มีรายการ
      * อ่านจาก status ระดับบน ไม่ใช่ lastResult จึงเห็นได้ตั้งแต่ระหว่างรันและตอนงานล้ม
      */
+    let lastTruncatedTopicsJson = "";
     function renderTruncatedTopics(topics) {
         const section = document.getElementById("truncated-section");
         const body = document.getElementById("truncated-table-body");
         if (!section || !body) return;
+
+        // ข้ามการสร้าง DOM ใหม่ทั้งหมดเมื่อข้อมูลไม่เปลี่ยน (ประหยัด CPU/layout)
+        const topicsJson = JSON.stringify(topics);
+        if (topicsJson === lastTruncatedTopicsJson) return;
+        lastTruncatedTopicsJson = topicsJson;
 
         if (!topics.length) {
             section.hidden = true;
@@ -147,11 +153,16 @@
         stopped: "หยุด",
     };
 
+    let lastSectionQueueJson = "";
     function renderSectionQueue(queue) {
         const container = document.getElementById("section-queue");
         const list = document.getElementById("section-queue-list");
         const summary = document.getElementById("section-queue-summary");
         if (!container || !list) return;
+        // ข้ามการสร้าง DOM ใหม่ทั้งหมดเมื่อข้อมูลไม่เปลี่ยน
+        const queueJson = JSON.stringify(queue);
+        if (queueJson === lastSectionQueueJson) return;
+        lastSectionQueueJson = queueJson;
         if (!Array.isArray(queue) || !queue.length) {
             container.hidden = true;
             return;
@@ -198,11 +209,21 @@
         return "info";
     }
 
+    let logFilterActive = false;
     function applyLogFilter() {
         if (!logOutput) return;
         const keyword = logFilterText.trim().toLowerCase();
+        if (!keyword) {
+            // ไม่มี keyword — คืนค่าแสดงผลเดิม (เฉพาะเมื่อเคยกรองไว้)
+            if (logFilterActive) {
+                for (const div of logOutput.children) div.style.display = "";
+                logFilterActive = false;
+            }
+            return;
+        }
+        logFilterActive = true;
         for (const div of logOutput.children) {
-            div.style.display = !keyword || div.textContent.toLowerCase().includes(keyword) ? "" : "none";
+            div.style.display = div.textContent.toLowerCase().includes(keyword) ? "" : "none";
         }
     }
 
@@ -218,8 +239,18 @@
         }
         logOutput.appendChild(fragment);
         while (logOutput.childElementCount > MAX_LOG_LINES) logOutput.removeChild(logOutput.firstChild);
-        applyLogFilter();
-        if (!logPaused) logOutput.scrollTop = logOutput.scrollHeight;
+        if (logFilterActive) applyLogFilter();
+        scheduleLogScroll();
+    }
+
+    let logScrollFrame = null;
+    /** เลื่อน log ผ่าน requestAnimationFrame — รวมการ scroll หลายครั้งต่อ frame ลด layout thrash */
+    function scheduleLogScroll() {
+        if (logPaused || !logOutput || logScrollFrame) return;
+        logScrollFrame = requestAnimationFrame(() => {
+            logScrollFrame = null;
+            if (!logPaused && logOutput) logOutput.scrollTop = logOutput.scrollHeight;
+        });
     }
 
     function copyLogs() {
@@ -502,8 +533,13 @@
         return td;
     }
 
+    let lastAuditRowsJson = "";
     function renderAuditRows(rows = []) {
         if (!auditTableBody) return;
+        // ข้ามการสร้าง <tr> ทั้งตารางใหม่เมื่อข้อมูลไม่เปลี่ยน
+        const rowsJson = JSON.stringify(rows);
+        if (rowsJson === lastAuditRowsJson) return;
+        lastAuditRowsJson = rowsJson;
         auditTableBody.textContent = "";
         if (!rows.length) {
             const tr = document.createElement("tr");
@@ -1158,13 +1194,45 @@
     }
     if (logCopyBtn) logCopyBtn.addEventListener("click", copyLogs);
 
+    // ---- Polling: ความถี่ต่ำลง + หยุดงานที่ไม่จำเป็นเมื่อ tab ถูกซ่อน ----
+    // status ยัง poll เมื่อซ่อน tab (ความถี่ต่ำลง) เพื่อให้ Notification เริ่ม/จบงานยังทำงาน
+    const POLL_INTERVALS = { status: 5000, logs: 5000, fileAudit: 15000, health: 30000 };
+    const HIDDEN_POLL_INTERVALS = { status: 10000, logs: 0, fileAudit: 0, health: 0 };
+    const pollTimers = { status: null, logs: null, fileAudit: null, health: null };
+    const POLL_FNS = { status: refreshStatus, logs: refreshLogs, fileAudit: refreshFileAudit, health: refreshHealth };
+
+    function stopPolling() {
+        for (const key of Object.keys(pollTimers)) {
+            if (pollTimers[key] !== null) {
+                clearInterval(pollTimers[key]);
+                pollTimers[key] = null;
+            }
+        }
+    }
+
+    function schedulePolling() {
+        stopPolling();
+        const intervals = document.hidden ? HIDDEN_POLL_INTERVALS : POLL_INTERVALS;
+        for (const key of Object.keys(POLL_FNS)) {
+            const ms = intervals[key];
+            if (ms > 0) pollTimers[key] = setInterval(POLL_FNS[key], ms);
+        }
+    }
+
+    function refreshAllNow() {
+        refreshStatus();
+        refreshLogs();
+        refreshFileAudit();
+        refreshHealth();
+    }
+
+    // กลับมาเปิด tab — เริ่ม poll ใหม่และอัปเดตข้อมูลทันที
+    document.addEventListener("visibilitychange", () => {
+        schedulePolling();
+        if (!document.hidden) refreshAllNow();
+    });
+
     loadVendorAdapters();
-    refreshStatus();
-    refreshLogs();
-    refreshFileAudit();
-    refreshHealth();
-    setInterval(refreshStatus, 3000);
-    setInterval(refreshLogs, 2000);
-    setInterval(refreshFileAudit, 5000);
-    setInterval(refreshHealth, 30000);
+    refreshAllNow();
+    schedulePolling();
 })();
