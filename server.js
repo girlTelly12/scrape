@@ -23,6 +23,7 @@ const { detectWebsiteVendor } = require("./src/vendors/detector");
 const { listVendorAdapters } = require("./src/vendors/registry");
 const { fetchHtml } = require("./src/common");
 const { discoverCategoryLinks } = require("./src/scrapers/url-parser");
+const { resolvePageTitles } = require("./src/page-title");
 
 function loadEnvFile() {
     const envPath = path.join(__dirname, ".env");
@@ -390,6 +391,29 @@ app.post("/api/topics/discover", async (req, res) => {
             return res.status(502).json({ ok: false, message: lastError.message, scanned });
         }
         return res.json({ ok: true, pageUrl, scanned, topics: [...merged.values()] });
+    } catch (error) {
+        return res.status(502).json({ ok: false, message: error.message });
+    }
+});
+
+/**
+ * หาชื่อหมวดอัตโนมัติจากลิงก์ที่ผู้ใช้วางมา (วาง URL หลายบรรทัด -> ระบบ fetch หน้านั้นแล้วอ่านชื่อ)
+ * ใช้กับเว็บที่เมนู/โครงสร้างไม่สามารถค้นหาหมวดอัตโนมัติได้ แต่ผู้ใช้ระบุลิงก์เองได้
+ */
+app.post("/api/topics/resolve-titles", async (req, res) => {
+    try {
+        const body = req.body || {};
+        const urls = (Array.isArray(body.urls) ? body.urls : [])
+            .map((value) => String(value || "").trim())
+            .filter(isHttpUrl);
+        if (!urls.length) {
+            return res.status(400).json({
+                ok: false,
+                message: "ไม่พบลิงก์ที่ขึ้นต้นด้วย http:// หรือ https://",
+            });
+        }
+        const results = await resolvePageTitles(urls, (message) => console.log(`[topics-title] ${message}`));
+        return res.json({ ok: true, results });
     } catch (error) {
         return res.status(502).json({ ok: false, message: error.message });
     }

@@ -937,6 +937,61 @@
     document.getElementById("bulk-close")?.addEventListener("click", () => {
         if (bulkPanel) bulkPanel.hidden = true;
     });
+
+    /** วาง URL หลายบรรทัด -> เปิดหน้านั้นแล้วอ่านชื่อหมวดมาเติมให้ (เฉพาะแถวที่ยังไม่มีชื่อ) */
+    const bulkResolveButton = document.getElementById("bulk-resolve-titles");
+    const bulkResolveStatus = document.getElementById("bulk-resolve-status");
+    bulkResolveButton?.addEventListener("click", async () => {
+        const lines = String(bulkInput?.value || "")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+        const urlOnlyLines = lines.filter((line) => /^https?:\/\/\S+$/i.test(line));
+        if (!urlOnlyLines.length) {
+            alert("ไม่พบแถวที่ใส่เฉพาะลิงก์ (ไม่มีชื่อ) — วางลิงก์อย่างน้อย 1 บรรทัด หรือใส่ชื่อไว้แล้ว");
+            return;
+        }
+
+        const originalText = bulkResolveButton.textContent;
+        try {
+            bulkResolveButton.disabled = true;
+            bulkResolveButton.textContent = "กำลังหาชื่อ...";
+            if (bulkResolveStatus) bulkResolveStatus.textContent = `กำลังเปิด ${urlOnlyLines.length} หน้าเพื่ออ่านชื่อ...`;
+            const data = await fetchJson(
+                "/api/topics/resolve-titles",
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ urls: urlOnlyLines }),
+                },
+                600000,
+            );
+            const byUrl = new Map((data.results || []).map((row) => [row.url, row.title]));
+            let found = 0;
+            let missing = 0;
+            const rewritten = lines.map((line) => {
+                if (!/^https?:\/\/\S+$/i.test(line)) return line;
+                const title = byUrl.get(line) || "";
+                if (title) {
+                    found += 1;
+                    return `${title} , ${line}`;
+                }
+                missing += 1;
+                return line;
+            });
+            if (bulkInput) bulkInput.value = rewritten.join("\n");
+            if (bulkResolveStatus) {
+                bulkResolveStatus.textContent =
+                    `หาชื่อได้ ${found} รายการ${missing ? ` | หาไม่ได้ ${missing} รายการ (พิมพ์ชื่อเองได้)` : ""}`;
+            }
+            if (!found) alert("ยังหาชื่อจากหน้าเว็บไม่ได้เลย (อาจโดน Cloudflare/403) — พิมพ์ชื่อเองหรือลองอีกครั้ง");
+        } catch (error) {
+            alert(`หาชื่ออัตโนมัติไม่สำเร็จ: ${error.message}`);
+        } finally {
+            bulkResolveButton.disabled = false;
+            bulkResolveButton.textContent = originalText;
+        }
+    });
     document.getElementById("bulk-apply")?.addEventListener("click", () => {
         const items = parseBulkInput(bulkInput?.value);
         if (!items.length) {

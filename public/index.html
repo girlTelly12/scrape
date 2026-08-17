@@ -876,12 +876,15 @@
                     <div id="bulk-panel" class="discover-panel" hidden>
                         <p class="muted" style="margin: 0 0 8px">
                             วางทีละบรรทัด รูปแบบ <code>ชื่อหัวข้อ , ลิงก์</code> หรือใส่เฉพาะลิงก์ก็ได้
+                            — กด <strong>หาชื่ออัตโนมัติ</strong> เพื่อให้ระบบเปิดหน้านั้นแล้วอ่านชื่อหมวดให้
                         </p>
-                        <textarea id="bulk-input" rows="6" placeholder="ข่าวประชาสัมพันธ์, https://example.go.th/news.php?cat_id=1&#10;https://example.go.th/news.php?cat_id=2"></textarea>
+                        <textarea id="bulk-input" rows="6" placeholder="ข่าวประชาสัมพันธ์, https://example.go.th/news.php?cat_id=1&#10;https://example.go.th/news.php?cat_id=2&#10;https://example.go.th/datacenter1/information.php"></textarea>
                         <div class="discover-toolbar" style="margin-top: 8px">
+                            <button id="bulk-resolve-titles" type="button">หาชื่ออัตโนมัติ</button>
                             <button id="bulk-apply" type="button">เพิ่มทั้งหมด</button>
                             <button id="bulk-close" type="button" class="secondary">ปิด</button>
                         </div>
+                        <p id="bulk-resolve-status" class="muted" style="margin: 8px 0 0"></p>
                     </div>
 
                     <div id="other-topics-list" class="other-topics-list"></div>
