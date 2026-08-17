@@ -53,9 +53,14 @@ function deriveWebsiteNameFromUrl(value) {
  * รองรับทั้งรูปแบบใหม่ otherTopics[] และรูปแบบเดิม otherTopicTitle/otherTopicUrl
  */
 function normalizeOtherTopics(body, databaseName) {
-    const rawTopics = Array.isArray(body.otherTopics)
-        ? body.otherTopics.slice(0, 50)
-        : [];
+    // ลิมิตหัวข้อเพิ่มเติมปรับได้ผ่าน MAX_OTHER_TOPICS (ค่าเริ่มต้น 200) เพื่อรองรับเว็บที่มีหมวดเยอะ
+    const maxOtherTopics = Math.max(1, Math.min(1000, Number(process.env.MAX_OTHER_TOPICS || 200)));
+    const rawTopics = Array.isArray(body.otherTopics) ? body.otherTopics.slice(0, maxOtherTopics) : [];
+    if (Array.isArray(body.otherTopics) && body.otherTopics.length > maxOtherTopics) {
+        console.warn(
+            `[topics] ตัดหัวข้อเพิ่มเติมเหลือ ${maxOtherTopics} จาก ${body.otherTopics.length} (ปรับได้ผ่าน MAX_OTHER_TOPICS)`,
+        );
+    }
 
     // รองรับ Client รุ่นเดิมที่ส่งได้เพียงหัวข้อเดียว
     if (!rawTopics.length && (body.otherTopicTitle || body.otherTopicUrl)) {
